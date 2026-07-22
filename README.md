@@ -38,6 +38,18 @@ Three ideas it demonstrates concretely:
 | **Ambient awareness** | It injects a one-line briefing into the agent's system prompt, so the agent raises the pet's needs unprompted instead of waiting to be asked. |
 | **No backend** | Built-in KV *is* the persistence layer. No database, no server, no migrations. KV is principal-scoped, so every user gets their own pet for free. |
 
+## Desktop overlay — the pet on your actual screen
+
+The pet can leave the terminal: [`overlay/`](overlay/) is a transparent
+always-on-top strip (Electron + PixiJS) where the same ASCII pet walks along
+the bottom edge of your desktop, blinks, and shows a thought bubble when it
+wants something. Clicking it opens an item menu (feed / play / wash / heal /
+sleep / status / `aos chat`). Actions go through a tiny HTTP bridge
+(`tools/pet.py serve`) straight into the capsule — no LLM in the loop, and the
+agent channel keeps working in parallel against the same state.
+
+See [overlay/README.md](overlay/README.md) for how to run it.
+
 ## Tools
 
 | Tool | Effect |
