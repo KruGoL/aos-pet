@@ -5,6 +5,14 @@ use crate::mood::Mood;
 
 pub const FRAME_COUNT: usize = 2;
 
+/// Wrap the standard silhouette around a face and an effect. Moments supply
+/// their own face so the pet visibly changes while one is running, without
+/// every moment having to redraw the whole body.
+#[must_use]
+pub fn compose(face: &str, fx: &str) -> String {
+    format!("    /\\_/\\\n   {face}   {fx}\n    > _ <")
+}
+
 /// The two animation frames for a mood, in order.
 #[must_use]
 pub fn frames(mood: Mood) -> [&'static str; FRAME_COUNT] {
@@ -49,6 +57,30 @@ pub fn frames(mood: Mood) -> [&'static str; FRAME_COUNT] {
    ( o.x )   *dust*
     > _ <  '  '",
         ],
+        Mood::Scruffy => [
+            r"    /\_/\
+   ( ^.^ )   *poof*
+    > u <   ' '",
+            r"    /\_/\
+   ( ^.- )   *poof*
+    > u <  '  '",
+        ],
+        Mood::Lonely => [
+            r"    /\_/\
+   ( o.o )
+    > _ <",
+            r"    /\_/\
+   ( .   )      <- looks away
+    > _ <",
+        ],
+        Mood::Radiant => [
+            r"    /\_/\    \ | /
+   ( ^o^ )   --  --
+    > ^ <    / | \",
+            r"    /\_/\    / | \
+   ( ^_^ )   --  --
+    > ^ <    \ | /",
+        ],
         Mood::Sad => [
             r"    /\_/\
    ( ;.; )
@@ -80,13 +112,16 @@ pub fn frames(mood: Mood) -> [&'static str; FRAME_COUNT] {
 mod tests {
     use super::*;
 
-    const ALL: [Mood; 8] = [
+    const ALL: [Mood; 11] = [
         Mood::Happy,
         Mood::Neutral,
         Mood::Hungry,
         Mood::Tired,
+        Mood::Scruffy,
         Mood::Dirty,
+        Mood::Lonely,
         Mood::Sad,
+        Mood::Radiant,
         Mood::Sick,
         Mood::Sleeping,
     ];

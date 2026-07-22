@@ -228,6 +228,16 @@ def show(tool, response):
     if err:
         print(f"[{tool}] {err}")
         return
+    if isinstance(data, dict) and "log" in data and "opponent" in data:
+        print(f"\n  {data.get('taunt', '')}")
+        print()
+        for line in data.get("log", []):
+            print(f"    {line}")
+        print()
+        print(f"  >> {data.get('message', '')}")
+        print(f"     hp left: you {data.get('my_hp_left')} / them {data.get('foe_hp_left')}"
+              f"  ·  victories: {data.get('victories')}")
+        return
     # A GameView wraps the pet plus the round's state.
     if isinstance(data, dict) and "pet" in data and isinstance(data["pet"], dict):
         print()
@@ -240,6 +250,15 @@ def show(tool, response):
         print()
         print(data["display"])
         print(f"  >> {data.get('message', '')}")
+    elif isinstance(data, dict) and "seen_count" in data:
+        print(f"\n  {data.get('name')} — moments witnessed: "
+              f"{data.get('seen_count')} of {data.get('total')}")
+        if data.get("now"):
+            print(f"  right now: {data['now']}")
+        for label in data.get("seen", []):
+            print(f"    * {label}")
+        if not data.get("seen"):
+            print("    (none yet — leave it be for a while)")
     elif isinstance(data, dict) and "alerts" in data:
         print(f"\n  Recent events for {data.get('name')}:")
         if not data["alerts"]:
@@ -253,6 +272,7 @@ def show(tool, response):
 COMMANDS = {
     "status": "pet_status", "feed": "pet_feed", "play": "pet_play",
     "clean": "pet_clean", "heal": "pet_heal", "alerts": "pet_alerts",
+    "moments": "pet_moments", "battle": "pet_battle",
 }
 
 

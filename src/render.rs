@@ -32,13 +32,27 @@ fn stat_line(label: &str, value: u8) -> String {
 #[must_use]
 pub fn display(pet: &Pet, frame: usize, now_ms: u64) -> String {
     let mood = mood_of(pet);
-    let art_frame = art::frames(mood)[frame % art::FRAME_COUNT];
+    // A moment takes over the picture — that is what makes it noticeable at a
+    // glance rather than a line of text nobody reads.
+    let owned;
+    let art_frame = match pet.moment.as_ref().and_then(crate::moment::Active::def) {
+        Some(m) => {
+            owned = art::compose(m.face[frame % art::FRAME_COUNT], m.fx);
+            owned.as_str()
+        }
+        None => art::frames(mood)[frame % art::FRAME_COUNT],
+    };
     let age_hours = pet.age_ms(now_ms) / 3_600_000;
 
     let mut out = String::new();
     out.push_str(art_frame);
     out.push_str("\n\n");
     out.push_str(&format!("  {} — {}\n", pet.name, mood.as_str()));
+    // A moment is the most interesting thing that can be true right now, so it
+    // goes above the bars rather than in a footnote.
+    if let Some(label) = pet.moment.as_ref().and_then(crate::moment::Active::def) {
+        out.push_str(&format!("  * {} {}\n", pet.name, label.label));
+    }
     out.push_str(&stat_line("Fullness", pet.fullness));
     out.push_str(&stat_line("Happiness", pet.happiness));
     out.push_str(&stat_line("Energy", pet.energy));
@@ -98,8 +112,11 @@ pub fn compact(pet: &Pet) -> String {
         Mood::Neutral => "o.o",
         Mood::Hungry => "O.O",
         Mood::Tired => "-.-",
+        Mood::Scruffy => "^.-",
         Mood::Dirty => "x.o",
+        Mood::Lonely => "._.",
         Mood::Sad => ";.;",
+        Mood::Radiant => "^o^",
         Mood::Sick => "x.x",
         Mood::Sleeping => "u.u",
     };
@@ -135,6 +152,13 @@ pub fn prompt_section(pet: &Pet) -> String {
     }
     if pet.sleeping {
         s.push_str(" It is asleep right now.");
+    }
+    // The whole point of a moment is that the agent mentions it unprompted.
+    if let Some(m) = pet.moment.as_ref().and_then(crate::moment::Active::def) {
+        s.push_str(&format!(
+            " Right now {} {} — worth mentioning, it does not happen often.",
+            pet.name, m.label
+        ));
     }
     s.push_str(
         " If it needs something, mention it naturally in your reply. \
@@ -254,11 +278,17 @@ mod tests {
     #[test]
     fn compact_face_tracks_the_mood() {
         let mut p = Pet::new("Rex".into(), 0);
+        p.fullness = 80;
+        p.happiness = 80;
+        p.energy = 80;
+        p.cleanliness = 80;
+        assert!(compact(&p).contains("^.^"), "thriving pet should smile");
+
         p.fullness = 100;
         p.happiness = 100;
         p.energy = 100;
         p.cleanliness = 100;
-        assert!(compact(&p).contains("^.^"), "thriving pet should smile");
+        assert!(compact(&p).contains("^o^"), "a radiant pet beams");
 
         p.fullness = 5;
         assert!(compact(&p).contains("O.O"), "hungry pet should look alarmed");

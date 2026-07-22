@@ -53,8 +53,61 @@ Three ideas it demonstrates concretely:
 | `pet_rename` | Rename without losing age, stats or history |
 | `pet_game_start` | Begin a guessing round |
 | `pet_game_guess` | Make a guess |
+| `pet_moments` | The collection — which rare moments you have witnessed |
+| `pet_battle` | A friendly scrap with a passing stranger |
 
 Neglect makes the pet **ill, never dead** — healing always works.
+
+### It lives while you are away
+
+The pet is not an object waiting for input. On the kernel's 5-second tick it
+looks after itself and occasionally just *does* something:
+
+```
+- Мурзик is getting hungry.
+- Мурзик has found a patch of sun          <- a rare moment, unprompted
+- Мурзик curled up and fell asleep on its own.
+- Мурзик slept itself out and got up.
+```
+
+Eighteen **rare moments** run off a hidden wall-clock deadline and a seed drawn
+in advance, both living in KV and never returned by any tool — so no amount of
+polling can summon, repeat or steer one. Gates tie what happens to how the pet
+is actually doing: a thriving pet gets `overjoyed`, a neglected one waits by the
+door. A moment takes over the artwork while it lasts and is mentioned in the
+agent's system prompt, so the agent brings it up without being asked.
+
+`pet_moments` tracks which ones you have witnessed — and moments only count when
+somebody looks. The watchdog can start one unattended; seeing it is on you.
+
+### Battles
+
+```
+  a hedgehog rolls up and waits
+
+    R1: Мурзик hits for 10 (critical!)
+    R1: a hedgehog hits back for 7 (critical!)
+    ...
+    R5: Мурзик hits for 9 — and that settles it
+
+  >> Мурзик sends a hedgehog packing!
+     hp left: you 4 / them 0  ·  victories: 1
+```
+
+Fighting ability is **derived from care, never trained**:
+
+```
+hp      = 40 + stage * 15                       // stage comes from age alone
+attack  =  5 + happiness / 10 + energy / 20
+defense =  3 + cleanliness / 12 + if !sick {5}
+speed   =  4 + energy / 8
+```
+
+So there is no training grind competing with looking after the pet — a fed,
+rested, clean pet simply wins more. Every roll happens inside the capsule, so
+the model narrating the fight cannot nudge its outcome. A round costs energy,
+which is a cooldown that needs no timer, and losing costs nothing but that
+energy: nothing is ever injured or lost.
 
 ### A game the agent cannot cheat at
 

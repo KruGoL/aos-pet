@@ -41,10 +41,31 @@ pub struct Pet {
     pub last_played_ms: u64,
     #[serde(default)]
     pub last_cleaned_ms: u64,
+    /// When the pet last entertained itself, so the 5 s tick cannot farm it.
+    #[serde(default)]
+    pub last_amused_ms: u64,
     #[serde(default)]
     pub alerts: Vec<Alert>,
     #[serde(default)]
     pub last_alert_ms: u64,
+
+    // --- rare moments ---
+    /// The moment currently happening, if any.
+    #[serde(default)]
+    pub moment: Option<crate::moment::Active>,
+    /// Wall-clock deadline for the next moment, and the seed that already
+    /// decided which one it will be. Never leaves the capsule — that is what
+    /// makes moments impossible to summon or steer.
+    #[serde(default)]
+    pub next_moment_ms: u64,
+    #[serde(default)]
+    pub next_moment_seed: u32,
+    /// Keys of moments the player has actually witnessed — the collection.
+    #[serde(default)]
+    pub seen_moments: Vec<String>,
+    /// Friendly scraps won. Never decreases; losing costs only the energy spent.
+    #[serde(default)]
+    pub victories: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,8 +131,22 @@ impl Pet {
             last_fed_ms: 0,
             last_played_ms: 0,
             last_cleaned_ms: 0,
+            last_amused_ms: 0,
             alerts: Vec::new(),
             last_alert_ms: 0,
+            moment: None,
+            next_moment_ms: 0,
+            next_moment_seed: 0,
+            seen_moments: Vec::new(),
+            victories: 0,
+        }
+    }
+
+    /// Record a moment as witnessed. Idempotent — the collection counts
+    /// distinct moments, not sightings.
+    pub fn witness(&mut self, key: &str) {
+        if !self.seen_moments.iter().any(|k| k == key) {
+            self.seen_moments.push(key.to_string());
         }
     }
 
@@ -133,10 +168,16 @@ impl Pet {
 
     /// Append an alert, keeping only the most recent `MAX_ALERTS`.
     pub fn push_alert(&mut self, kind: AlertKind, at_ms: u64) {
+        let message = kind.message(&self.name);
+        self.push_alert_with(kind, at_ms, message);
+    }
+
+    /// Append an alert that carries its own wording — moments name themselves.
+    pub fn push_alert_with(&mut self, kind: AlertKind, at_ms: u64, message: String) {
         self.alerts.push(Alert {
             at_ms,
             kind,
-            message: kind.message(&self.name),
+            message,
         });
         if self.alerts.len() > MAX_ALERTS {
             let excess = self.alerts.len() - MAX_ALERTS;

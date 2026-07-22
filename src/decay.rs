@@ -51,6 +51,9 @@ pub fn advance(pet: &mut Pet, now_ms: u64, cfg: &Config) -> Vec<AlertKind> {
 
     let slow = if pet.sleeping { cfg.sleep_decay_factor } else { 1.0 };
     let sad_mult = if pet.sick { cfg.sick_decay_factor } else { 1.0 };
+    // A moment colours the whole span it covers: dozing in a sunbeam is
+    // restful, tearing around the room is not.
+    let slow = slow * crate::behaviour::decay_multiplier(pet);
 
     pet.fullness = drop_stat(pet.fullness, cfg.fullness_per_hour * slow, hours);
     // Happiness deliberately ignores `slow`. If sleep paused everything it would

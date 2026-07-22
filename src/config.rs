@@ -5,6 +5,8 @@
 pub const LOW: u8 = 25;
 /// Every stat at or above this means the pet is thriving.
 pub const HIGH: u8 = 70;
+/// Everything brimming — the pet is not merely fine, it is radiant.
+pub const PEAK: u8 = 90;
 
 pub const MS_PER_HOUR: f64 = 3_600_000.0;
 

@@ -6,6 +6,8 @@
 //! fake the pet's condition. All mutation happens through typed tool calls.
 
 mod art;
+mod battle;
+mod behaviour;
 mod config;
 mod decay;
 mod economy;
@@ -101,6 +103,33 @@ pub struct AlertsView {
 }
 
 #[derive(Debug, Serialize)]
+pub struct BattleView {
+    pub opponent: String,
+    pub taunt: String,
+    /// Blow by blow, in order — a battle is an event, and events get retold.
+    pub log: Vec<String>,
+    pub won: bool,
+    /// True when nobody fell and it was decided on remaining condition.
+    pub on_points: bool,
+    pub my_hp_left: u16,
+    pub foe_hp_left: u16,
+    pub victories: u32,
+    pub message: String,
+    pub pet: PetView,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MomentsView {
+    pub name: String,
+    /// How many distinct moments have been witnessed, out of how many exist.
+    pub seen_count: u16,
+    pub total: u16,
+    /// What is happening right this second, if anything.
+    pub now: Option<String>,
+    pub seen: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct GameView {
     /// What just happened, phrased for the player.
     pub message: String,
@@ -173,15 +202,47 @@ fn game_view(
 
 /// Load the pet and bring it up to date, recording any thresholds crossed
 /// while nobody was looking. Every entry point goes through here.
+/// Fresh host entropy for scheduling the next moment. Falls back to a
+/// clock-derived value only if the host refuses — a scheduled moment matters
+/// less than the pet continuing to work.
+fn fresh_seed(now: u64) -> u32 {
+    let mut buf = [0u8; 4];
+    match getrandom::fill(&mut buf) {
+        Ok(()) => u32::from_le_bytes(buf),
+        Err(_) => (now ^ (now >> 17)) as u32,
+    }
+}
+
+/// Advance decay and the pet's own behaviour, recording what happened.
+fn tick_pet(pet: &mut Pet, now: u64, cfg: &Config) {
+    for kind in decay::advance(pet, now, cfg) {
+        log::info(format!("[aos-pet] {}", kind.message(&pet.name)));
+        pet.push_alert(kind, now);
+    }
+    for (kind, message) in behaviour::update(pet, now, cfg, fresh_seed(now)) {
+        log::info(format!("[aos-pet] {message}"));
+        pet.push_alert_with(kind, now, message);
+    }
+}
+
+/// Load the pet and bring it up to date. Player-facing only — the watchdog
+/// deliberately does not come through here, so that witnessing a moment
+/// requires somebody to actually look.
 fn current(now: u64, cfg: &Config) -> Result<Pet, SysError> {
     let mut pet = kv::get_json_opt::<Pet>(KV_KEY)?.ok_or_else(|| {
         SysError::ApiError(
             "You have no pet yet. Call pet_adopt with a name to adopt one.".to_string(),
         )
     })?;
-    for kind in decay::advance(&mut pet, now, cfg) {
-        log::info(format!("[aos-pet] {}", kind.message(&pet.name)));
-        pet.push_alert(kind, now);
+    tick_pet(&mut pet, now, cfg);
+
+    if let Some(key) = pet
+        .moment
+        .as_ref()
+        .and_then(moment::Active::def)
+        .map(|d| d.key)
+    {
+        pet.witness(key);
     }
     Ok(pet)
 }
@@ -544,6 +605,96 @@ impl Capsule {
         Ok(game_view(&pet, now, msg, true, g.guesses, g.guesses_left()))
     }
 
+    /// Pick a friendly scrap with a passing stranger. Fighting ability is
+    /// derived from how well the pet has been looked after — there is nothing
+    /// to train, so a fed, rested, clean pet simply wins more. Costs energy,
+    /// and a tired pet will refuse.
+    #[astrid::tool("pet_battle")]
+    pub fn pet_battle(&self, _args: NoArgs) -> Result<BattleView, SysError> {
+        let cfg = load_config();
+        let now = now_ms()?;
+        let mut pet = current(now, &cfg)?;
+        refuse_if_asleep(&pet)?;
+
+        if pet.sick {
+            return Err(SysError::ApiError(format!(
+                "{} is ill and in no shape to scrap. Try pet_heal first.",
+                pet.name
+            )));
+        }
+        if pet.energy < battle::MIN_ENERGY {
+            return Err(SysError::ApiError(format!(
+                "{} is too tired to fight — it needs rest first.",
+                pet.name
+            )));
+        }
+
+        let mine = battle::stats_for(&pet, now);
+        let report = battle::fight(&pet.name, mine, fresh_seed(now));
+
+        pet.energy = stat_sub(pet.energy, battle::ENERGY_COST);
+        let message = if report.won {
+            pet.victories = pet.victories.saturating_add(1);
+            pet.happiness = stat_add(pet.happiness, 20);
+            format!(
+                "{} sends {} packing{}!",
+                pet.name,
+                report.opponent,
+                if report.on_points { " on points" } else { "" }
+            )
+        } else {
+            // Losing costs only the energy already spent. Nothing is injured.
+            format!(
+                "{} comes off worse against {}, but shakes it off.",
+                pet.name, report.opponent
+            )
+        };
+        log::info(format!("[aos-pet] battle: won={} vs {}", report.won, report.opponent));
+        save(&pet)?;
+
+        Ok(BattleView {
+            opponent: report.opponent,
+            taunt: report.taunt,
+            log: report.log,
+            won: report.won,
+            on_points: report.on_points,
+            my_hp_left: report.my_hp_left,
+            foe_hp_left: report.foe_hp_left,
+            victories: pet.victories,
+            pet: view(&pet, now, message.clone()),
+            message,
+        })
+    }
+
+    /// The collection: which rare moments this pet has been caught having, and
+    /// how many are still out there. Moments only count when somebody looks —
+    /// the watchdog can start one unattended, but seeing it is on you.
+    #[astrid::tool("pet_moments")]
+    pub fn pet_moments(&self, _args: NoArgs) -> Result<MomentsView, SysError> {
+        let cfg = load_config();
+        let now = now_ms()?;
+        let pet = current(now, &cfg)?;
+        save(&pet)?;
+
+        let seen: Vec<String> = moment::MOMENTS
+            .iter()
+            .filter(|m| pet.seen_moments.iter().any(|k| k == m.key))
+            .map(|m| m.label.to_string())
+            .collect();
+
+        Ok(MomentsView {
+            name: pet.name.clone(),
+            seen_count: seen.len() as u16,
+            total: moment::MOMENTS.len() as u16,
+            now: pet
+                .moment
+                .as_ref()
+                .and_then(moment::Active::def)
+                .map(|d| d.label.to_string()),
+            seen,
+        })
+    }
+
     /// Kernel watchdog tick — fires roughly every 5 seconds while the daemon
     /// runs. This is how the pet notices it got hungry with nobody watching.
     ///
@@ -559,16 +710,22 @@ impl Capsule {
         };
 
         let before = pet.clone();
-        let crossed = decay::advance(&mut pet, now, &cfg);
-        if crossed.is_empty() && stats_unchanged(&before, &pet) {
-            // Nothing observable happened, so skip the write. This also keeps
-            // the maths honest: leaving `last_seen` alone means the next tick
-            // measures one full span instead of rounding away many tiny ones.
+        tick_pet(&mut pet, now, &cfg);
+
+        // The cheap "nothing happened" skip has to account for everything the
+        // player could notice, not just the four bars. A moment starting is
+        // observable while every stat stays byte-identical, and the moment
+        // schedule MUST be persisted — drop it and the next tick reschedules
+        // from scratch, postponing moments forever.
+        let unchanged = stats_unchanged(&before, &pet)
+            && before.moment == pet.moment
+            && before.sleeping == pet.sleeping
+            && before.next_moment_ms == pet.next_moment_ms
+            && before.alerts.len() == pet.alerts.len();
+        if unchanged {
+            // Leaving `last_seen` alone also keeps the maths honest: the next
+            // tick measures one full span instead of rounding away many tiny ones.
             return Ok(());
-        }
-        for kind in &crossed {
-            log::info(format!("[aos-pet] {}", kind.message(&pet.name)));
-            pet.push_alert(*kind, now);
         }
         save(&pet)
     }

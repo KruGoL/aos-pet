@@ -39,6 +39,8 @@ decay_scale = { type = "string", default = "1.0", request = "Decay speed multipl
 "tool.v1.execute.pet_rename" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_pet_rename" }
 "tool.v1.execute.pet_game_start" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_pet_game_start" }
 "tool.v1.execute.pet_game_guess" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_pet_game_guess" }
+"tool.v1.execute.pet_moments" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_pet_moments" }
+"tool.v1.execute.pet_battle" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_pet_battle" }
 "tool.v1.request.describe" = { wit = "@unicity-astrid/wit/tool/describe-request", handler = "tool_describe" }
 
 # Kernel heartbeat (~every 5s). Needs no capability and no publish row; this is
