@@ -50,7 +50,14 @@ pub fn advance(pet: &mut Pet, now_ms: u64, cfg: &Config) -> Vec<AlertKind> {
     );
 
     let slow = if pet.sleeping { cfg.sleep_decay_factor } else { 1.0 };
-    let sad_mult = if pet.sick { cfg.sick_decay_factor } else { 1.0 };
+    // Physical illness makes a pet miserable faster — but applying the same
+    // multiplier to Gloom would mean sadness accelerates sadness, a spiral that
+    // outruns the very cure it is supposed to motivate. Gloom is excluded so
+    // cheering the pet up can actually gain ground.
+    let physically_ill = crate::ailment::active(pet)
+        .iter()
+        .any(|a| *a != crate::ailment::Ailment::Gloom);
+    let sad_mult = if physically_ill { cfg.sick_decay_factor } else { 1.0 };
     // A moment colours the whole span it covers: dozing in a sunbeam is
     // restful, tearing around the room is not.
     let slow = slow * crate::behaviour::decay_multiplier(pet);
@@ -68,15 +75,12 @@ pub fn advance(pet: &mut Pet, now_ms: u64, cfg: &Config) -> Vec<AlertKind> {
         drop_stat(pet.energy, cfg.energy_per_hour, hours)
     };
 
-    // Neglect only accrues while something is bottomed out. Any recovery resets it.
-    if pet.fullness == 0 || pet.cleanliness == 0 {
-        pet.neglect_ms = pet.neglect_ms.saturating_add(elapsed);
-    } else {
-        pet.neglect_ms = 0;
-    }
-    if pet.neglect_ms >= cfg.sick_after_ms {
-        pet.sick = true;
-    }
+    // Each ailment keeps its own clock, so the cure can be specific to the
+    // cause rather than one universal "sick" flag.
+    crate::ailment::accrue(pet, elapsed, cfg);
+    pet.sick = crate::ailment::is_ill(pet);
+    // Kept in step for the legacy field; nothing reads it for diagnosis now.
+    pet.neglect_ms = pet.famine_ms.max(pet.grime_ms);
 
     pet.last_seen_ms = now_ms;
 
@@ -95,6 +99,12 @@ pub fn advance(pet: &mut Pet, now_ms: u64, cfg: &Config) -> Vec<AlertKind> {
     }
     if !was.4 && pet.sick {
         crossed.push(AlertKind::Sick);
+    }
+    // The symmetric edge. Gloom unwinds on its own once the pet cheers up, so
+    // illness can end without anyone doing anything — without this the player
+    // is told about every relapse and never about the recovery.
+    if was.4 && !pet.sick {
+        crossed.push(AlertKind::Recovered);
     }
     crossed
 }
@@ -217,16 +227,43 @@ mod tests {
     }
 
     #[test]
-    fn feeding_resets_the_neglect_clock() {
+    fn recovery_stops_neglect_accruing_but_does_not_erase_it() {
+        // The clock no longer snaps back to zero the instant a bar is full:
+        // that is what `ailment::apply_remedy` is for, and it is why an illness
+        // now takes sustained care to shake rather than one good meal.
         let cfg = Config::default();
         let mut p = pet_at(0);
         advance(&mut p, 15 * HOUR, &cfg);
-        assert!(p.neglect_ms > 0);
+        let accrued = p.famine_ms;
+        assert!(accrued > 0);
 
         p.fullness = 100;
         p.cleanliness = 100;
         advance(&mut p, 16 * HOUR, &cfg);
-        assert_eq!(p.neglect_ms, 0, "recovery must clear accrued neglect");
+        assert_eq!(p.famine_ms, accrued, "a full bar stops the clock, no more");
+    }
+
+    #[test]
+    fn recovering_on_its_own_is_announced_just_like_falling_ill() {
+        // Gloom unwinds without anyone lifting a finger, so recovery has to be
+        // reported from here. Without the symmetric edge the player heard about
+        // every relapse and never once about getting better.
+        let cfg = Config::default();
+        let mut p = pet_at(0);
+        p.fullness = 100;
+        p.cleanliness = 100;
+        p.happiness = 0;
+        let fell = advance(&mut p, 10 * HOUR, &cfg);
+        assert!(fell.contains(&AlertKind::Sick), "got {fell:?}");
+
+        // Cheer it up — and keep the other needs met, or the pet simply trades
+        // gloom for famine and stays ill for an unrelated reason.
+        p.happiness = 100;
+        p.fullness = 100;
+        p.cleanliness = 100;
+        let rose = advance(&mut p, 20 * HOUR, &cfg);
+        assert!(!p.sick, "gloom should have lifted, got {:?}", crate::ailment::active(&p));
+        assert!(rose.contains(&AlertKind::Recovered), "got {rose:?}");
     }
 
     #[test]
@@ -238,14 +275,33 @@ mod tests {
     }
 
     #[test]
-    fn sickness_makes_happiness_fall_faster() {
+    fn physical_illness_makes_happiness_fall_faster() {
         let cfg = Config::default();
         let mut well = pet_at(0);
         let mut ill = pet_at(0);
+        ill.famine_ms = 99 * HOUR; // genuinely, physically unwell
         ill.sick = true;
 
         advance(&mut well, 2 * HOUR, &cfg);
         advance(&mut ill, 2 * HOUR, &cfg);
         assert!(ill.happiness < well.happiness);
+    }
+
+    #[test]
+    fn gloom_alone_does_not_accelerate_its_own_decay() {
+        // The anti-spiral guard: if gloom doubled happiness decay, being sad
+        // would make the pet sadder faster than any amount of company could fix.
+        let cfg = Config::default();
+        let mut fine = pet_at(0);
+        let mut gloomy = pet_at(0);
+        gloomy.gloom_ms = 99 * HOUR;
+        gloomy.sick = true;
+
+        advance(&mut fine, 2 * HOUR, &cfg);
+        advance(&mut gloomy, 2 * HOUR, &cfg);
+        assert_eq!(
+            gloomy.happiness, fine.happiness,
+            "gloom must not compound itself"
+        );
     }
 }

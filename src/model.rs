@@ -44,6 +44,11 @@ pub struct Pet {
     /// When the pet last entertained itself, so the 5 s tick cannot farm it.
     #[serde(default)]
     pub last_amused_ms: u64,
+    /// When medicine was last given. Without this, `pet_heal` is the one action
+    /// with no readiness clock, and spamming it becomes a master key that cures
+    /// everything — exactly what the three-ailment design exists to prevent.
+    #[serde(default)]
+    pub last_healed_ms: u64,
     #[serde(default)]
     pub alerts: Vec<Alert>,
     #[serde(default)]
@@ -66,6 +71,15 @@ pub struct Pet {
     /// Friendly scraps won. Never decreases; losing costs only the energy spent.
     #[serde(default)]
     pub victories: u32,
+
+    /// Neglect clocks, one per ailment. Each is `+= elapsed` once per span, so
+    /// a long absence costs a single addition rather than an iteration.
+    #[serde(default)]
+    pub famine_ms: u64,
+    #[serde(default)]
+    pub grime_ms: u64,
+    #[serde(default)]
+    pub gloom_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +146,7 @@ impl Pet {
             last_played_ms: 0,
             last_cleaned_ms: 0,
             last_amused_ms: 0,
+            last_healed_ms: 0,
             alerts: Vec::new(),
             last_alert_ms: 0,
             moment: None,
@@ -139,6 +154,9 @@ impl Pet {
             next_moment_seed: 0,
             seen_moments: Vec::new(),
             victories: 0,
+            famine_ms: 0,
+            grime_ms: 0,
+            gloom_ms: 0,
         }
     }
 

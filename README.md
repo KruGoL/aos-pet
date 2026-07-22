@@ -45,10 +45,10 @@ Three ideas it demonstrates concretely:
 | `pet_adopt` | Adopt a pet and name it (`replace: true` to start over) |
 | `pet_status` | Art, mood and every stat bar |
 | `pet_feed` | Fullness ↑ |
-| `pet_play` | Happiness ↑, energy ↓ — refuses if ill or asleep |
+| `pet_play` | Happiness ↑, energy ↓ — refuses if asleep or physically ill |
 | `pet_sleep` | Sleep / wake (`wake: true`). Energy recovers while asleep |
 | `pet_clean` | Cleanliness → 100 |
-| `pet_heal` | Cure illness |
+| `pet_heal` | Medicine — eases illness, but never a substitute for care |
 | `pet_alerts` | What happened while you were away |
 | `pet_rename` | Rename without losing age, stats or history |
 | `pet_game_start` | Begin a guessing round |
@@ -56,7 +56,32 @@ Three ideas it demonstrates concretely:
 | `pet_moments` | The collection — which rare moments you have witnessed |
 | `pet_battle` | A friendly scrap with a passing stranger |
 
-Neglect makes the pet **ill, never dead** — healing always works.
+Neglect makes the pet **ill, never dead** — every illness is always curable.
+
+### Three illnesses, three different cures
+
+There is no single "sick" state and no one button that fixes it. Neglect a
+particular need long enough and the pet earns the matching ailment:
+
+| It is… | Because you | What actually fixes it |
+|---|---|---|
+| weak from hunger | let it starve | feed it, regularly |
+| itchy and sore from the dirt | left it filthy | wash it, more than once |
+| sunk in gloom | never played with it | play with it — **medicine will not lift this** |
+
+`pet_heal` is real medicine, but it is not a master key: it takes the edge off
+hunger and grime, cures neither outright, and does nothing at all for gloom. It
+buys you time to do the actual thing.
+
+Recovery obeys the same anti-grind rule as everything else — a remedy is worth
+what it is worth *because you spaced it out*. Three impatient clicks in a row
+will not undo a week of neglect, and that includes medicine: `pet_heal` has its
+own clock, so hammering it is worth almost nothing.
+
+A gloomy pet will always still play with you and still take you up on a game,
+because those are its only way back. It will refuse a fight — a miserable pet
+has no business scrapping — but it will tell you plainly that what it needs is
+company, not a doctor.
 
 ### It lives while you are away
 

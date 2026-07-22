@@ -67,8 +67,11 @@ def build_lines(data, frame):
     lines = [f"{art[i]:<16} {right[i]}" for i in range(3)]
 
     tail = ""
-    if data.get("sick"):
-        tail = "* ill — needs healing"
+    ailments = data.get("ailments") or []
+    if ailments:
+        # Name the ailment, not just "ill" — each one has a different cure and
+        # the status bar is where the player notices it first.
+        tail = "* " + ", ".join(a["label"] for a in ailments)
     elif data.get("sleeping"):
         tail = "* asleep"
     lines.append(f"{'':<16} {tail}")

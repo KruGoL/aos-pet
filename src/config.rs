@@ -24,13 +24,12 @@ pub struct Config {
     pub sleep_decay_factor: f64,
     /// Happiness decay is multiplied by this while the pet is sick.
     pub sick_decay_factor: f64,
-    /// How long a stat may sit at zero before the pet falls ill.
-    pub sick_after_ms: u64,
     /// Hours after which each kind of care pays its full happiness bonus again.
     /// Shorter gaps still work — they are simply worth proportionally less.
     pub feed_ideal_hours: f64,
     pub play_ideal_hours: f64,
     pub clean_ideal_hours: f64,
+    pub heal_ideal_hours: f64,
 }
 
 impl Default for Config {
@@ -44,10 +43,12 @@ impl Default for Config {
             energy_recovery_per_hour: 20.0,
             sleep_decay_factor: 0.4,
             sick_decay_factor: 2.0,
-            sick_after_ms: 6 * 3_600_000,
             feed_ideal_hours: 4.0,
             play_ideal_hours: 3.0,
             clean_ideal_hours: 12.0,
+            // Longest of the four: medicine is meant to be occasional relief,
+            // not part of the daily routine.
+            heal_ideal_hours: 8.0,
         }
     }
 }

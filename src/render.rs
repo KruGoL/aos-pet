@@ -57,10 +57,12 @@ pub fn display(pet: &Pet, frame: usize, now_ms: u64) -> String {
     out.push_str(&stat_line("Happiness", pet.happiness));
     out.push_str(&stat_line("Energy", pet.energy));
     out.push_str(&stat_line("Cleanliness", pet.cleanliness));
-    out.push_str(&format!("  age {age_hours}h"));
-    if pet.sick {
-        out.push_str("   [ILL — try pet_heal]");
+    // Name the ailment and its remedy: "sick" alone tells the player nothing
+    // about what to actually do.
+    for a in crate::ailment::active(pet) {
+        out.push_str(&format!("  ! {} — {}\n", a.label(), a.remedy()));
     }
+    out.push_str(&format!("  age {age_hours}h"));
     if pet.sleeping {
         out.push_str("   [asleep — pet_sleep wake=true]");
     }
@@ -147,8 +149,8 @@ pub fn prompt_section(pet: &Pet) -> String {
         pet.energy,
         pet.cleanliness
     );
-    if pet.sick {
-        s.push_str(" It is ILL and needs pet_heal.");
+    for a in crate::ailment::active(pet) {
+        s.push_str(&format!(" It is {} — {}.", a.label(), a.remedy()));
     }
     if pet.sleeping {
         s.push_str(" It is asleep right now.");
@@ -212,10 +214,14 @@ mod tests {
     }
 
     #[test]
-    fn display_flags_illness_and_sleep() {
+    fn display_names_the_ailment_and_flags_sleep() {
+        // Showing "ILL" told the player nothing actionable; the ailment and its
+        // remedy do, and they are what the three cures are for.
         let mut p = Pet::new("Rex".into(), 0);
-        p.sick = true;
-        assert!(display(&p, 0, 0).contains("ILL"));
+        p.famine_ms = 99 * 3_600_000;
+        let out = display(&p, 0, 0);
+        assert!(out.contains("weak from hunger"), "got {out}");
+        assert!(out.contains("feed it"), "the remedy must be spelled out");
 
         let mut s = Pet::new("Rex".into(), 0);
         s.sleeping = true;
@@ -295,16 +301,20 @@ mod tests {
     }
 
     #[test]
-    fn prompt_section_states_the_facts_and_flags_illness() {
+    fn prompt_section_states_the_facts_and_names_the_ailment() {
         let mut p = Pet::new("Rex".into(), 0);
         let normal = prompt_section(&p);
         assert!(normal.contains("Rex"));
         assert!(normal.contains("80/100"));
         assert!(normal.contains("pet_feed"));
-        assert!(!normal.contains("ILL"));
+        assert!(!normal.contains("sunk in gloom"));
 
-        p.sick = true;
-        assert!(prompt_section(&p).contains("ILL"));
+        // The agent can only give useful advice if the prompt says which
+        // ailment it is — "sick" would have it guessing.
+        p.gloom_ms = 99 * 3_600_000;
+        let ill = prompt_section(&p);
+        assert!(ill.contains("sunk in gloom"), "got {ill}");
+        assert!(ill.contains("play with it"), "got {ill}");
     }
 
     #[test]

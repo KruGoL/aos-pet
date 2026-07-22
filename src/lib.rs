@@ -5,6 +5,7 @@
 //! decays against the real wall clock, so the model cannot invent, freeze or
 //! fake the pet's condition. All mutation happens through typed tool calls.
 
+mod ailment;
 mod art;
 mod battle;
 mod behaviour;
@@ -67,6 +68,16 @@ pub struct SleepArgs {
 // ------------------------------------------------------------------ results
 
 #[derive(Debug, Serialize)]
+pub struct AilmentView {
+    /// Machine-readable: famine / grime / gloom.
+    pub kind: String,
+    /// How it looks to the owner.
+    pub label: String,
+    /// The one thing that actually fixes it.
+    pub remedy: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct PetView {
     pub name: String,
     pub mood: String,
@@ -76,6 +87,9 @@ pub struct PetView {
     pub cleanliness: u8,
     pub sleeping: bool,
     pub sick: bool,
+    /// Which ailments are active, and what actually cures each. `sick` alone
+    /// cannot tell a client whether to feed, wash or play.
+    pub ailments: Vec<AilmentView>,
     pub age_hours: u64,
     /// What just happened, in words.
     pub message: String,
@@ -257,6 +271,14 @@ fn view(pet: &Pet, now: u64, message: impl Into<String>) -> PetView {
         cleanliness: pet.cleanliness,
         sleeping: pet.sleeping,
         sick: pet.sick,
+        ailments: ailment::active(pet)
+            .into_iter()
+            .map(|a| AilmentView {
+                kind: a.key().to_string(),
+                label: a.label().to_string(),
+                remedy: a.remedy().to_string(),
+            })
+            .collect(),
         age_hours: pet.age_ms(now) / 3_600_000,
         message: message.into(),
         display: render::display(pet, 0, now),
@@ -271,6 +293,18 @@ fn view(pet: &Pet, now: u64, message: impl Into<String>) -> PetView {
 fn commit(pet: &Pet, now: u64, message: impl Into<String>) -> Result<PetView, SysError> {
     save(pet)?;
     Ok(view(pet, now, message))
+}
+
+/// Raise the recovery alert when a cure has just cleared the last ailment.
+///
+/// This cannot live in `decay::advance`: that samples `sick` before a tool
+/// runs, so a cure applied afterwards is invisible to it. It cannot live in
+/// `commit` either, since only the cure paths know the before-state.
+fn note_recovery(pet: &mut Pet, was_ill: bool, now: u64) {
+    if was_ill && !pet.sick {
+        pet.push_alert(AlertKind::Recovered, now);
+        log::info(format!("[aos-pet] {} recovered", pet.name));
+    }
 }
 
 /// True when nothing a player could notice has changed.
@@ -338,17 +372,24 @@ impl Capsule {
         refuse_if_asleep(&pet)?;
 
         // Pressing food on a pet that does not want it is fussing, not care.
+        // Note the clock is deliberately NOT stamped here: a refused meal must
+        // leave readiness recharging, or spamming the bowl would pin the next
+        // real feed — and with it the Famine cure — at nearly zero value.
         if economy::is_overserving(pet.fullness) {
             pet.happiness = stat_sub(pet.happiness, economy::OVERSERVE_PENALTY);
-            pet.last_fed_ms = now;
             let msg = format!("{} is already full and turns away from the bowl.", pet.name);
             return commit(&pet, now, msg);
         }
 
+        let was_ill = pet.sick;
         let ready = economy::readiness(pet.last_fed_ms, now, cfg.feed_ideal_hours, cfg.scale);
         pet.fullness = stat_add(pet.fullness, FEED_GAIN);
         pet.happiness = stat_add(pet.happiness, economy::payoff(FEED_JOY, ready));
         pet.last_fed_ms = now;
+        // Feeding is the cure for hunger-sickness, not medicine.
+        ailment::apply_remedy(&mut pet, ailment::Ailment::Famine, ready);
+        pet.sick = ailment::is_ill(&pet);
+        note_recovery(&mut pet, was_ill, now);
 
         let msg = format!(
             "{} munches happily. Fullness is now {}.{}",
@@ -368,20 +409,30 @@ impl Capsule {
         let mut pet = current(now, &cfg)?;
         refuse_if_asleep(&pet)?;
 
-        if pet.sick {
+        // Gloom is cured by company, so a gloomy pet must always be allowed to
+        // play — refusing on a blanket `sick` flag would lock the player out of
+        // the only remedy that works. Physical illness still says no.
+        if let Some(a) = ailment::blocks_play(&pet) {
             return Err(SysError::ApiError(format!(
-                "{} is too ill to play. Try pet_heal first.",
-                pet.name
+                "{} is {} and cannot romp about. {}.",
+                pet.name,
+                a.label(),
+                a.remedy()
             )));
         }
         if pet.energy < PLAY_ENERGY_COST {
             let msg = format!("{} is too tired to play — it needs rest.", pet.name);
             return commit(&pet, now, msg);
         }
+        let was_ill = pet.sick;
         let ready = economy::readiness(pet.last_played_ms, now, cfg.play_ideal_hours, cfg.scale);
         pet.happiness = stat_add(pet.happiness, economy::payoff(PLAY_GAIN, ready));
         pet.energy = stat_sub(pet.energy, PLAY_ENERGY_COST);
         pet.last_played_ms = now;
+        // Company is the only thing that lifts gloom — medicine cannot.
+        ailment::apply_remedy(&mut pet, ailment::Ailment::Gloom, ready);
+        pet.sick = ailment::is_ill(&pet);
+        note_recovery(&mut pet, was_ill, now);
 
         let msg = format!(
             "You play together. {} is delighted!{}",
@@ -423,17 +474,21 @@ impl Capsule {
         let mut pet = current(now, &cfg)?;
         refuse_if_asleep(&pet)?;
 
+        // As with feeding: a refused wash must not restart the clock.
         if economy::is_overserving(pet.cleanliness) {
             pet.happiness = stat_sub(pet.happiness, economy::OVERSERVE_PENALTY);
-            pet.last_cleaned_ms = now;
             let msg = format!("{} is already spotless and squirms away from the water.", pet.name);
             return commit(&pet, now, msg);
         }
 
+        let was_ill = pet.sick;
         let ready = economy::readiness(pet.last_cleaned_ms, now, cfg.clean_ideal_hours, cfg.scale);
         pet.cleanliness = 100;
         pet.happiness = stat_add(pet.happiness, economy::payoff(CLEAN_JOY, ready));
         pet.last_cleaned_ms = now;
+        ailment::apply_remedy(&mut pet, ailment::Ailment::Grime, ready);
+        pet.sick = ailment::is_ill(&pet);
+        note_recovery(&mut pet, was_ill, now);
 
         let msg = format!(
             "{} is scrubbed clean and smells lovely.{}",
@@ -451,20 +506,39 @@ impl Capsule {
         let now = now_ms()?;
         let mut pet = current(now, &cfg)?;
 
-        if !pet.sick {
+        // Dosing on any path, including the no-op one, so repeat presses cannot
+        // farm the clock by bouncing off the healthy early return.
+        let ready = economy::readiness(pet.last_healed_ms, now, cfg.heal_ideal_hours, cfg.scale);
+        pet.last_healed_ms = now;
+
+        let before = ailment::active(&pet);
+        if before.is_empty() {
             let msg = format!("{} is perfectly healthy.", pet.name);
             return commit(&pet, now, msg);
         }
-        pet.sick = false;
-        pet.neglect_ms = 0;
-        pet.fullness = stat_add(pet.fullness, HEAL_BOOST);
-        pet.happiness = stat_add(pet.happiness, HEAL_BOOST);
-        pet.push_alert(AlertKind::Recovered, now);
-        log::info(format!("[aos-pet] {} recovered", pet.name));
-        let msg = format!(
-            "{} takes the medicine and perks up. Illness cured!",
-            pet.name
-        );
+
+        ailment::apply_medicine(&mut pet, ready);
+        pet.happiness = stat_add(pet.happiness, economy::payoff(HEAL_BOOST / 2, ready));
+        pet.sick = ailment::is_ill(&pet);
+        note_recovery(&mut pet, true, now);
+
+        let remaining = ailment::active(&pet);
+        let msg = if remaining.is_empty() {
+            log::info(format!("[aos-pet] {} recovered", pet.name));
+            format!("{} takes the medicine and perks up — recovered!", pet.name)
+        } else {
+            // Medicine is not a master key: say plainly what is wrong and what
+            // would actually fix it, or the tool reads as broken.
+            let what: Vec<&str> = remaining.iter().map(|a| a.label()).collect();
+            let how: Vec<&str> = remaining.iter().map(|a| a.remedy()).collect();
+            format!(
+                "{} takes the medicine and settles a little, but it is still {}. \
+                 Medicine only buys time — {}.",
+                pet.name,
+                what.join(" and "),
+                how.join("; ")
+            )
+        };
         commit(&pet, now, msg)
     }
 
@@ -520,10 +594,16 @@ impl Capsule {
         let mut pet = current(now, &cfg)?;
         refuse_if_asleep(&pet)?;
 
-        if pet.sick {
+        // Same rule as pet_play: games are a listed cure for Gloom, so a
+        // blanket `sick` check here would gate the remedy behind the ailment it
+        // is meant to lift — and send the player to pet_heal, which by design
+        // cannot touch gloom at all.
+        if let Some(a) = ailment::blocks_play(&pet) {
             return Err(SysError::ApiError(format!(
-                "{} is too ill for games. Try pet_heal first.",
-                pet.name
+                "{} is {} and cannot concentrate on a game. {}.",
+                pet.name,
+                a.label(),
+                a.remedy()
             )));
         }
         if pet.energy < game::ENERGY_COST {
@@ -561,6 +641,7 @@ impl Capsule {
             ));
         };
 
+        let was_ill = pet.sick;
         let outcome = game::guess(&mut g, args.value);
         let warmth = game::warmth(g.secret, args.value);
 
@@ -578,6 +659,10 @@ impl Capsule {
             }
             game::Outcome::Won { guesses, reward } => {
                 pet.happiness = stat_add(pet.happiness, reward);
+                // A won game is earned attention, so it always counts in full.
+                ailment::apply_remedy(&mut pet, ailment::Ailment::Gloom, 1.0);
+                pet.sick = ailment::is_ill(&pet);
+                note_recovery(&mut pet, was_ill, now);
                 kv::delete(game::KV_GAME)?;
                 save(&pet)?;
                 let msg = format!(
@@ -616,10 +701,16 @@ impl Capsule {
         let mut pet = current(now, &cfg)?;
         refuse_if_asleep(&pet)?;
 
-        if pet.sick {
+        // Unlike games, a scrap is not a cure for anything, so ANY ailment
+        // still bars it — a miserable pet has no business in a fight either.
+        // The refusal must name the real remedy though: sending a gloomy pet to
+        // pet_heal would be advice that provably cannot work.
+        if let Some(a) = ailment::active(&pet).first().copied() {
             return Err(SysError::ApiError(format!(
-                "{} is ill and in no shape to scrap. Try pet_heal first.",
-                pet.name
+                "{} is {} and in no shape to scrap. {}.",
+                pet.name,
+                a.label(),
+                a.remedy()
             )));
         }
         if pet.energy < battle::MIN_ENERGY {
