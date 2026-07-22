@@ -21,6 +21,15 @@ pub const ONSET_H: f64 = 6.0;
 pub const REMEDY_H: f64 = 2.5;
 /// What medicine takes off every ailment — help, not a cure.
 pub const MEDICINE_H: f64 = 1.0;
+/// How deep an ailment may ever get, in pet-hours.
+///
+/// Without a ceiling the clocks are unbounded, and neglect converts directly
+/// into cure-time at 1:1 — a pet left a week needs 67 perfectly-spaced meals,
+/// which at four hours of readiness apiece is eleven real days. That is a death
+/// sentence served slowly, and the game's one promise is that the pet never
+/// dies. Capping at three times the onset keeps serious neglect genuinely
+/// serious (~8 well-timed remedies) while keeping every illness escapable.
+pub const MAX_DEPTH_H: f64 = ONSET_H * 3.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,21 +80,33 @@ fn hours_to_ms(h: f64) -> u64 {
 /// Accrue neglect for a span. Called once per `advance`, never in a loop.
 pub fn accrue(pet: &mut Pet, elapsed_ms: u64, cfg: &Config) {
     let scaled = (elapsed_ms as f64 * cfg.scale) as u64;
+    // The ceiling is applied on write, so a pet that was already driven past it
+    // — by a long absence or a compressed-time demo — is pulled back into
+    // recoverable range on its very next tick rather than staying doomed.
+    let cap = hours_to_ms(MAX_DEPTH_H);
 
     if pet.fullness == 0 {
-        pet.famine_ms = pet.famine_ms.saturating_add(scaled);
+        pet.famine_ms = pet.famine_ms.saturating_add(scaled).min(cap);
     }
     if pet.cleanliness == 0 {
-        pet.grime_ms = pet.grime_ms.saturating_add(scaled);
+        pet.grime_ms = pet.grime_ms.saturating_add(scaled).min(cap);
     }
     // Gloom is about a sustained low mood rather than an empty bar — you can be
     // fed and clean and still be miserable.
     if pet.happiness < LOW {
-        pet.gloom_ms = pet.gloom_ms.saturating_add(scaled);
+        pet.gloom_ms = pet.gloom_ms.saturating_add(scaled).min(cap);
     } else {
         // Cheer it up at all and the clock starts unwinding on its own.
         pet.gloom_ms = pet.gloom_ms.saturating_sub(scaled);
     }
+
+    // Clamp on EVERY pass, not only while accruing. A pet that arrives already
+    // past the ceiling — saved before the cap existed, or run through a
+    // compressed-time demo — has full bars and so never enters the branches
+    // above; without this it would stay doomed forever.
+    pet.famine_ms = pet.famine_ms.min(cap);
+    pet.grime_ms = pet.grime_ms.min(cap);
+    pet.gloom_ms = pet.gloom_ms.min(cap);
 }
 
 /// Which ailments have set in.
@@ -294,6 +315,47 @@ mod tests {
         accrue(&mut p, 365 * 24 * HOUR, &cfg);
         assert!(active(&p).contains(&Ailment::Famine));
         assert!(p.famine_ms > 0, "and it saturates rather than overflowing");
+    }
+
+    #[test]
+    fn no_amount_of_neglect_makes_a_pet_incurable() {
+        // The promise is that the pet never dies. An unbounded clock breaks it
+        // quietly: a year away once meant ~3500 perfectly-spaced meals to undo,
+        // which is a death sentence wearing a recovery costume.
+        let cfg = Config::default();
+        let mut p = pet();
+        p.fullness = 0;
+        accrue(&mut p, 365 * 24 * HOUR, &cfg);
+
+        let mut remedies = 0;
+        while active(&p).contains(&Ailment::Famine) {
+            apply_remedy(&mut p, Ailment::Famine, 1.0);
+            remedies += 1;
+            assert!(remedies < 50, "recovery must be reachable, not theoretical");
+        }
+        assert!(remedies <= 8, "took {remedies} well-timed meals");
+    }
+
+    #[test]
+    fn an_already_doomed_pet_is_pulled_back_into_range() {
+        // Pets saved before the ceiling existed (or run through a compressed-time
+        // demo) carry huge clocks. The cap is applied on write so they recover on
+        // the next tick instead of staying permanently ill.
+        let cfg = Config::default();
+        let mut p = pet();
+        // Full bars on purpose: the doomed pet observed live had fullness 100,
+        // so the accrual branches never ran and an in-branch clamp missed it.
+        p.fullness = 100;
+        p.cleanliness = 100;
+        p.famine_ms = 743 * HOUR; // an actual value observed in a live pet
+        p.grime_ms = 743 * HOUR;
+        accrue(&mut p, 1000, &cfg);
+        assert!(p.grime_ms <= hours_to_ms(MAX_DEPTH_H), "grime too");
+        assert!(
+            p.famine_ms <= hours_to_ms(MAX_DEPTH_H),
+            "legacy depth must be clamped, got {}",
+            p.famine_ms
+        );
     }
 
     #[test]
