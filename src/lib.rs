@@ -78,6 +78,8 @@ pub struct PetView {
     pub display: String,
     /// One-line summary for a status bar or shell prompt.
     pub line: String,
+    /// Severity for clients that colour their output: ok / warn / critical / resting.
+    pub level: String,
     /// Both animation frames, for a viewer that redraws on a timer.
     pub frames: Vec<String>,
 }
@@ -195,6 +197,7 @@ fn view(pet: &Pet, now: u64, message: impl Into<String>) -> PetView {
         message: message.into(),
         display: render::display(pet, 0, now),
         line: render::compact(pet),
+        level: render::level(pet).to_string(),
         frames: render::frames_for(pet, now),
     }
 }

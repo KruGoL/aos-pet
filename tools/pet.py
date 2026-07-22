@@ -21,6 +21,7 @@ Usage:
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -29,6 +30,25 @@ import time
 AOS = os.path.expanduser("~/.aos/bin/aos")
 HOME = os.path.expanduser("~")
 LINE_CACHE = os.path.join(HOME, ".pet-line")
+
+# The capsule reports a semantic level; mapping it to a palette is a client
+# concern. tmux interprets #[...] directives inside #(command) output.
+#
+# The default tmux status bar is black-on-green, so colouring the foreground
+# would make "ok" invisible. Change the segment BACKGROUND instead — trouble
+# then reads at a glance without looking at the numbers.
+TMUX_STYLE = {
+    "ok": "",                                   # inherit the bar's own colours
+    "resting": "#[bg=blue,fg=white]",
+    "warn": "#[bg=yellow,fg=black,bold]",
+    "critical": "#[bg=red,fg=white,bold]",
+}
+_STYLE_RE = re.compile(r"#\[[^\]]*\]")
+
+
+def strip_style(text):
+    """Drop tmux style directives so a plain terminal shows readable text."""
+    return _STYLE_RE.sub("", text)
 
 
 def _aos(args, timeout=120):
@@ -305,7 +325,10 @@ def daemon(interval):
             data, err = unpack(session.call("pet_status", {}))
             if err:
                 raise RuntimeError(err)
-            line = (data.get("line") if isinstance(data, dict) else None) or "pet: ?"
+            body = (data.get("line") if isinstance(data, dict) else None) or "pet: ?"
+            lvl = (data.get("level") if isinstance(data, dict) else None) or "ok"
+            style = TMUX_STYLE.get(lvl, "")
+            line = f"{style}{body}#[default]" if style else body
         except KeyboardInterrupt:
             raise
         except Exception as exc:
@@ -327,7 +350,7 @@ def print_line():
     try:
         age = time.time() - os.path.getmtime(LINE_CACHE)
         with open(LINE_CACHE) as fh:
-            text = fh.read().strip()
+            text = strip_style(fh.read().strip())
         # Stale cache means the daemon died; say so rather than lie.
         print(text if age < 120 else f"{text} (stale)")
     except OSError:

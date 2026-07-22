@@ -1,6 +1,7 @@
 //! Turning pet state into something a human wants to look at.
 
 use crate::art;
+use crate::config::LOW;
 use crate::model::Pet;
 use crate::mood::{mood_of, Mood};
 
@@ -64,6 +65,28 @@ pub fn frames_for(pet: &Pet, now_ms: u64) -> Vec<String> {
 #[must_use]
 pub fn mood_name(pet: &Pet) -> &'static str {
     mood_of(pet).as_str()
+}
+
+/// How worried a client should look, as a semantic level rather than a colour.
+///
+/// The capsule deliberately does not know about tmux, ANSI or any other client:
+/// it reports severity, and each client maps that onto its own palette.
+#[must_use]
+pub fn level(pet: &Pet) -> &'static str {
+    let bottomed = pet.fullness == 0
+        || pet.happiness == 0
+        || pet.energy == 0
+        || pet.cleanliness == 0;
+    if pet.sick || bottomed {
+        return "critical";
+    }
+    if pet.sleeping {
+        return "resting";
+    }
+    if pet.fullness < LOW || pet.happiness < LOW || pet.energy < LOW || pet.cleanliness < LOW {
+        return "warn";
+    }
+    "ok"
 }
 
 /// A tiny one-line summary, sized for a status bar or shell prompt.
@@ -173,6 +196,44 @@ mod tests {
         let mut s = Pet::new("Rex".into(), 0);
         s.sleeping = true;
         assert!(display(&s, 0, 0).contains("asleep"));
+    }
+
+    #[test]
+    fn level_escalates_with_the_pets_condition() {
+        let mut p = Pet::new("Rex".into(), 0);
+        p.fullness = 100;
+        p.happiness = 100;
+        p.energy = 100;
+        p.cleanliness = 100;
+        assert_eq!(level(&p), "ok");
+
+        p.happiness = LOW - 1;
+        assert_eq!(level(&p), "warn", "a low stat is a warning");
+
+        p.happiness = 0;
+        assert_eq!(level(&p), "critical", "a bottomed stat is critical");
+    }
+
+    #[test]
+    fn illness_is_always_critical_even_with_perfect_stats() {
+        let mut p = Pet::new("Rex".into(), 0);
+        p.fullness = 100;
+        p.happiness = 100;
+        p.energy = 100;
+        p.cleanliness = 100;
+        p.sick = true;
+        assert_eq!(level(&p), "critical");
+    }
+
+    #[test]
+    fn sleeping_reads_as_resting_unless_something_is_actually_wrong() {
+        let mut p = Pet::new("Rex".into(), 0);
+        p.sleeping = true;
+        assert_eq!(level(&p), "resting");
+
+        // Asleep is no excuse for starving.
+        p.fullness = 0;
+        assert_eq!(level(&p), "critical");
     }
 
     #[test]
