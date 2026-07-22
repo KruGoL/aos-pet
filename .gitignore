@@ -2,3 +2,4 @@
 /dist
 *.capsule
 *.wasm
+__pycache__/

@@ -65,7 +65,7 @@ pub fn update(pet: &mut Pet, now: u64, cfg: &Config, fresh_seed: u32) -> Vec<Eve
         let set = moment::eligible(pet.fullness, pet.happiness, pet.energy, pet.cleanliness);
         if let Some(idx) = moment::pick(&set, seed) {
             if let Some(def) = moment::MOMENTS.get(idx as usize) {
-                let ends = now.saturating_add(moment::duration_ms(idx, seed));
+                let ends = now.saturating_add(moment::duration_ms(idx, seed, cfg.scale));
                 pet.moment = Some(moment::Active { idx, ends_at_ms: ends });
                 events.push((AlertKind::Moment, format!("{} {}", pet.name, def.label)));
             }
@@ -104,16 +104,6 @@ pub fn update(pet: &mut Pet, now: u64, cfg: &Config, fresh_seed: u32) -> Vec<Eve
     }
 
     events
-}
-
-/// Decay multiplier contributed by an active moment: a sunbeam is restful,
-/// zoomies burn through the afternoon.
-#[must_use]
-pub fn decay_multiplier(pet: &Pet) -> f64 {
-    pet.moment
-        .as_ref()
-        .and_then(|a| a.def())
-        .map_or(1.0, |d| d.decay_mult)
 }
 
 #[cfg(test)]
@@ -239,21 +229,6 @@ mod tests {
         p.happiness = 90.0;
         let events = update(&mut p, HOUR, &cfg, 1);
         assert!(!events.iter().any(|(k, _)| *k == AlertKind::AmusedItself));
-    }
-
-    #[test]
-    fn the_decay_multiplier_follows_the_active_moment() {
-        let mut p = pet();
-        assert_eq!(decay_multiplier(&p), 1.0, "no moment, no change");
-
-        // Find a restful moment and a burning one, whatever their indices.
-        let calm = moment::MOMENTS.iter().position(|m| m.decay_mult < 1.0).unwrap();
-        p.moment = Some(moment::Active { idx: calm as u16, ends_at_ms: 0 });
-        assert!(decay_multiplier(&p) < 1.0);
-
-        let busy = moment::MOMENTS.iter().position(|m| m.decay_mult > 1.0).unwrap();
-        p.moment = Some(moment::Active { idx: busy as u16, ends_at_ms: 0 });
-        assert!(decay_multiplier(&p) > 1.0);
     }
 
     #[test]

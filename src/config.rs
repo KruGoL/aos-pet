@@ -57,11 +57,16 @@ impl Config {
     /// Apply a `decay_scale` string from capsule config. Anything unparseable,
     /// non-finite or non-positive leaves the default untouched — a bad config
     /// value must never freeze or explode the pet.
+    ///
+    /// The accepted range is also clamped: at absurd magnitudes like 1e308 the
+    /// hours arithmetic overflows to infinity, the finiteness guards in decay
+    /// then skip every update, and the "never freeze" promise above is broken
+    /// by the very value that was supposed to speed things up.
     #[must_use]
     pub fn with_scale_str(mut self, raw: &str) -> Self {
         if let Ok(parsed) = raw.trim().parse::<f64>() {
             if parsed.is_finite() && parsed > 0.0 {
-                self.scale = parsed;
+                self.scale = parsed.clamp(0.001, 1_000_000.0);
             }
         }
         self
@@ -76,6 +81,15 @@ mod tests {
     fn valid_scale_is_applied() {
         assert_eq!(Config::default().with_scale_str("60").scale, 60.0);
         assert_eq!(Config::default().with_scale_str("  2.5 ").scale, 2.5);
+    }
+
+    #[test]
+    fn absurd_magnitudes_are_clamped_not_obeyed() {
+        // 1e308 made the hours arithmetic overflow to infinity, which tripped
+        // the finiteness guards in decay and froze the pet — the opposite of
+        // what a huge scale asks for.
+        assert_eq!(Config::default().with_scale_str("1e308").scale, 1_000_000.0);
+        assert_eq!(Config::default().with_scale_str("1e-30").scale, 0.001);
     }
 
     #[test]

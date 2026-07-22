@@ -170,9 +170,13 @@ pub fn pick(eligible: &[u16], seed: u32) -> Option<u16> {
     eligible.last().copied()
 }
 
-/// How long this moment should run, derived from the same seed.
+/// How long this moment should run, in wall-clock ms, derived from the same
+/// seed. Divided by `scale` like the gap is: moment lengths are written in
+/// pet-minutes, and a compressed demo that brings moments sooner but lets each
+/// one run its full real-world length would spend most of its runtime inside
+/// one moment.
 #[must_use]
-pub fn duration_ms(idx: u16, seed: u32) -> u64 {
+pub fn duration_ms(idx: u16, seed: u32, scale: f64) -> u64 {
     let Some(m) = MOMENTS.get(idx as usize) else {
         return 0;
     };
@@ -180,7 +184,7 @@ pub fn duration_ms(idx: u16, seed: u32) -> u64 {
     // A different slice of the seed than `pick` uses, so length and choice are
     // not correlated.
     let minutes = m.min_minutes + ((seed >> 8) % span);
-    u64::from(minutes) * 60_000
+    ((f64::from(minutes) * 60_000.0) / scale.max(0.0001)) as u64
 }
 
 /// Gap until the next moment, in wall-clock ms, from the same seed.
@@ -304,7 +308,7 @@ mod tests {
     fn duration_stays_inside_the_declared_window() {
         for (i, m) in MOMENTS.iter().enumerate() {
             for seed in [0u32, 5, 777, u32::MAX] {
-                let ms = duration_ms(i as u16, seed);
+                let ms = duration_ms(i as u16, seed, 1.0);
                 let minutes = ms / 60_000;
                 assert!(
                     minutes >= u64::from(m.min_minutes) && minutes <= u64::from(m.max_minutes),
@@ -316,8 +320,19 @@ mod tests {
     }
 
     #[test]
+    fn duration_compresses_with_scale_exactly_like_the_gap() {
+        // At the documented demo scale a moment must not outlive the entire
+        // session: gap and duration have to shrink together or the pet spends
+        // the whole demo stuck in one moment.
+        let real = duration_ms(0, 777, 1.0);
+        let demo = duration_ms(0, 777, 60.0);
+        assert!(demo <= real / 59, "got real={real} demo={demo}");
+        assert!(demo > 0, "and it must not collapse to nothing");
+    }
+
+    #[test]
     fn an_out_of_range_index_is_survived() {
-        assert_eq!(duration_ms(9999, 1), 0);
+        assert_eq!(duration_ms(9999, 1, 1.0), 0);
         assert!(Active { idx: 9999, ends_at_ms: 0 }.def().is_none());
     }
 

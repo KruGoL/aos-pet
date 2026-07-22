@@ -32,6 +32,46 @@ fn raise_stat(stat: f64, per_hour: f64, hours: f64) -> f64 {
     (stat + delta).clamp(0.0, 100.0)
 }
 
+/// Pet-hours of `span_h` a linearly-falling stat spends at or below
+/// `threshold`, given where it started and how fast it falls. Closed form —
+/// this is what lets neglect accounting stay single-shot without judging the
+/// whole span by its end state.
+///
+/// The rate is the span's average when a moment weights it, so the crossing
+/// time is approximate within the moment's window — minutes of error against
+/// thresholds measured in hours.
+fn hours_below(before: f64, threshold: f64, rate: f64, span_h: f64) -> f64 {
+    if before <= threshold {
+        return span_h;
+    }
+    if rate <= 0.0 || !rate.is_finite() {
+        return 0.0;
+    }
+    (span_h - (before - threshold) / rate).max(0.0)
+}
+
+fn pet_hours_to_ms(h: f64) -> u64 {
+    (h * MS_PER_HOUR) as u64
+}
+
+/// Multiplier from an active moment, weighted by how much of the span the
+/// moment actually covers. `ends_at_ms` caps it: a restful sunbeam that ended
+/// five minutes into a two-week absence colours five minutes, not two weeks.
+fn moment_multiplier(pet: &Pet, now_ms: u64, elapsed_ms: u64) -> f64 {
+    let Some(active) = pet.moment.as_ref() else {
+        return 1.0;
+    };
+    let Some(def) = active.def() else {
+        return 1.0;
+    };
+    let overlap = active
+        .ends_at_ms
+        .min(now_ms)
+        .saturating_sub(pet.last_seen_ms);
+    let frac = (overlap as f64 / elapsed_ms as f64).clamp(0.0, 1.0);
+    def.decay_mult * frac + (1.0 - frac)
+}
+
 /// Advance the pet to `now_ms`, returning any thresholds newly crossed
 /// (used to raise alerts). Idempotent for a repeated timestamp.
 pub fn advance(pet: &mut Pet, now_ms: u64, cfg: &Config) -> Vec<AlertKind> {
@@ -60,17 +100,27 @@ pub fn advance(pet: &mut Pet, now_ms: u64, cfg: &Config) -> Vec<AlertKind> {
         .iter()
         .any(|a| *a != crate::ailment::Ailment::Gloom);
     let sad_mult = if physically_ill { cfg.sick_decay_factor } else { 1.0 };
-    // A moment colours the whole span it covers: dozing in a sunbeam is
-    // restful, tearing around the room is not.
-    let slow = slow * crate::behaviour::decay_multiplier(pet);
+    // A moment colours only the part of the span it actually overlaps. Applying
+    // it to the whole span let one sunbeam slow an entire fortnight of absence.
+    let slow = slow * moment_multiplier(pet, now_ms, elapsed);
 
-    pet.fullness = drop_stat(pet.fullness, cfg.fullness_per_hour * slow, hours);
+    let full_rate = cfg.fullness_per_hour * slow;
+    let joy_rate = cfg.happiness_per_hour * sad_mult;
+    let clean_rate = cfg.cleanliness_per_hour * slow;
+
+    // Pre-span values: the closed-form neglect accounting below needs to know
+    // where each bar STARTED to work out when it crossed its threshold.
+    let full_before = pet.fullness;
+    let joy_before = pet.happiness;
+    let clean_before = pet.cleanliness;
+
+    pet.fullness = drop_stat(pet.fullness, full_rate, hours);
     // Happiness deliberately ignores `slow`. If sleep paused everything it would
     // be a strictly dominant move — cheap to enter, cheap to leave, decay almost
     // halted — and the optimal way to play would be to keep the pet in a coma.
     // Making it trade mood for energy turns sleep into an actual decision.
-    pet.happiness = drop_stat(pet.happiness, cfg.happiness_per_hour * sad_mult, hours);
-    pet.cleanliness = drop_stat(pet.cleanliness, cfg.cleanliness_per_hour * slow, hours);
+    pet.happiness = drop_stat(pet.happiness, joy_rate, hours);
+    pet.cleanliness = drop_stat(pet.cleanliness, clean_rate, hours);
     pet.energy = if pet.sleeping {
         raise_stat(pet.energy, cfg.energy_recovery_per_hour, hours)
     } else {
@@ -78,8 +128,20 @@ pub fn advance(pet: &mut Pet, now_ms: u64, cfg: &Config) -> Vec<AlertKind> {
     };
 
     // Each ailment keeps its own clock, so the cure can be specific to the
-    // cause rather than one universal "sick" flag.
-    crate::ailment::accrue(pet, elapsed, cfg);
+    // cause. The clocks are charged only for the time a bar actually spent past
+    // its threshold — computed in closed form from the pre-span value and the
+    // rate, never by iterating. Judging a whole span by its end state fabricated
+    // illness: a pet whose bowl emptied a second before you returned was billed
+    // for the entire fortnight, and whether it fell ill at all depended on how
+    // often anything happened to poll it.
+    let below_low = hours_below(joy_before, f64::from(LOW), joy_rate, hours);
+    let spans = crate::ailment::NeglectSpans {
+        famine_ms: pet_hours_to_ms(hours_below(full_before, 0.0, full_rate, hours)),
+        grime_ms: pet_hours_to_ms(hours_below(clean_before, 0.0, clean_rate, hours)),
+        gloom_below_ms: pet_hours_to_ms(below_low),
+        gloom_above_ms: pet_hours_to_ms((hours - below_low).max(0.0)),
+    };
+    crate::ailment::accrue(pet, &spans);
     pet.sick = crate::ailment::is_ill(pet);
     // Kept in step for the legacy field; nothing reads it for diagnosis now.
     pet.neglect_ms = pet.famine_ms.max(pet.grime_ms);
@@ -267,6 +329,81 @@ mod tests {
         let rose = advance(&mut p, 20 * HOUR, &cfg);
         assert!(!p.sick, "gloom should have lifted, got {:?}", crate::ailment::active(&p));
         assert!(rose.contains(&AlertKind::Recovered), "got {rose:?}");
+    }
+
+    #[test]
+    fn illness_no_longer_depends_on_how_often_the_pet_is_observed() {
+        // The audit's probe, kept as a regression guard: charging the whole
+        // span against the end-of-span bar meant one 12-hour absence produced
+        // [Famine, Gloom] while the same 12 hours polled hourly produced
+        // nothing. The closed form must make the two indistinguishable.
+        let cfg = Config::default();
+        let mut quiet = pet_at(0);
+        advance(&mut quiet, 12 * HOUR, &cfg);
+
+        let mut watched = pet_at(0);
+        for i in 1..=12u64 {
+            advance(&mut watched, i * HOUR, &cfg);
+        }
+        assert_eq!(
+            quiet.famine_ms, watched.famine_ms,
+            "one shot vs hourly must charge identical famine"
+        );
+        assert_eq!(quiet.sick, watched.sick);
+    }
+
+    #[test]
+    fn a_pet_is_not_diagnosed_the_moment_its_bowl_empties() {
+        // Fullness 80 at 8/h reaches zero at t=10h. The old accounting billed
+        // all ten hours as famine and pronounced the pet ill on arrival.
+        let cfg = Config::default();
+        let mut p = pet_at(0);
+        advance(&mut p, 10 * HOUR, &cfg);
+        assert_eq!(p.famine_ms, 0, "the decline is not neglect");
+        assert!(!p.sick);
+
+        // Six further hours AT zero is what earns the illness.
+        advance(&mut p, 16 * HOUR, &cfg);
+        assert!(p.sick, "got famine_ms={}", p.famine_ms);
+    }
+
+    #[test]
+    fn compressed_time_makes_illness_arrive_sooner_in_real_seconds() {
+        // Moved from ailment.rs when accrual went closed-form: scale is decay's
+        // concern now. 40 real seconds at 2000x is ~22 pet-hours — ten to empty
+        // the bowl, twelve at zero, comfortably past onset.
+        let fast = Config::default().with_scale_str("2000");
+        let mut p = pet_at(0);
+        advance(&mut p, 40_000, &fast);
+        assert!(p.sick, "demos must be possible, famine_ms={}", p.famine_ms);
+    }
+
+    #[test]
+    fn a_moment_colours_only_the_time_it_actually_covers() {
+        // A one-hour sunbeam inside a five-hour span slows one hour of decay,
+        // not five. Before the weighting, a restful moment at the start of a
+        // fortnight's absence discounted the entire fortnight.
+        let cfg = Config::default();
+        let calm = crate::moment::MOMENTS
+            .iter()
+            .position(|m| (m.decay_mult - 0.5).abs() < 1e-9)
+            .expect("the roster has a 0.5x moment") as u16;
+
+        let mut basked = pet_at(0);
+        basked.moment = Some(crate::moment::Active { idx: calm, ends_at_ms: HOUR });
+        advance(&mut basked, 5 * HOUR, &cfg);
+
+        // frac = 1/5, so the effective multiplier is 0.5*0.2 + 0.8 = 0.9.
+        let expected = 80.0 - 8.0 * 0.9 * 5.0;
+        assert!(
+            (basked.fullness - expected).abs() < 1e-9,
+            "got {}, want {expected}",
+            basked.fullness
+        );
+
+        let mut plain = pet_at(0);
+        advance(&mut plain, 5 * HOUR, &cfg);
+        assert!(basked.fullness > plain.fullness, "the sunbeam still helped");
     }
 
     #[test]
