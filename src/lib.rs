@@ -734,16 +734,27 @@ impl Capsule {
                 return Ok(game_view(&pet, now, msg, true, g.guesses, g.guesses_left()));
             }
             game::Outcome::Won { guesses, reward } => {
-                pet.happiness = stat_add(pet.happiness, reward);
-                // A won game is earned attention, so it always counts in full.
-                ailment::apply_remedy(&mut pet, ailment::Ailment::Gloom, 1.0);
+                // A won round is earned play, and it shares play's readiness
+                // clock — this used to be the one unclocked happiness tap in
+                // the capsule, an infinite mill for anyone patient enough to
+                // binary-search. The floor keeps a win from ever paying
+                // nothing: the effort was real even if the last game was five
+                // minutes ago.
+                let ready =
+                    economy::readiness(pet.last_played_ms, now, cfg.play_ideal_hours, cfg.scale);
+                let gain = economy::payoff(reward, ready).max(reward / 4).max(1);
+                pet.happiness = stat_add(pet.happiness, gain);
+                pet.last_played_ms = now;
+                ailment::apply_remedy(&mut pet, ailment::Ailment::Gloom, ready.max(0.25));
                 pet.sick = ailment::is_ill(&pet);
                 note_recovery(&mut pet, was_ill, now);
                 kv::delete(game::KV_GAME)?;
                 save(&pet)?;
                 let msg = format!(
-                    "{} it is — guessed in {guesses}! {} is delighted (+{reward} happiness).",
-                    args.value, pet.name
+                    "{} it is — guessed in {guesses}! {} is delighted (+{gain} happiness).{}",
+                    args.value,
+                    pet.name,
+                    economy::payoff_note(ready)
                 );
                 return Ok(game_view(&pet, now, msg, false, guesses, 0));
             }
@@ -802,7 +813,13 @@ impl Capsule {
         pet.energy = stat_sub(pet.energy, battle::ENERGY_COST);
         let message = if report.won {
             pet.victories = pet.victories.saturating_add(1);
-            pet.happiness = stat_add(pet.happiness, 20);
+            // Winning is fun, and fun shares one clock: play, games and scraps
+            // all stamp last_played_ms, so alternating them cannot farm what
+            // each alone could not. Energy already paces the fighting itself.
+            let ready =
+                economy::readiness(pet.last_played_ms, now, cfg.play_ideal_hours, cfg.scale);
+            pet.happiness = stat_add(pet.happiness, economy::payoff(20, ready).max(5));
+            pet.last_played_ms = now;
             format!(
                 "{} sends {} packing{}!",
                 pet.name,

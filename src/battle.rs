@@ -26,28 +26,35 @@ pub struct Stats {
 
 pub struct Archetype {
     pub name: &'static str,
-    /// Percentage tweaks applied to the player's own stat line, so opponents
-    /// are always in the same league — challenging, never hopeless.
-    pub hp_pct: i16,
-    pub attack_pct: i16,
-    pub defense_pct: i16,
-    pub speed_pct: i16,
+    /// Fixed stat line: this is what the creature IS, regardless of who walks
+    /// up to it. Opponents used to mirror the player's own stats scaled by a
+    /// percentage, which quietly made care worthless in a fight — a filthy,
+    /// exhausted pet met proportionally feeble opponents and won exactly as
+    /// often as a cherished one. Absolute lines are what let care shift odds.
+    pub hp: u16,
+    pub attack: u16,
+    pub defense: u16,
+    pub speed: u16,
     pub taunt: &'static str,
 }
 
+/// The field, roughly in ascending order of menace. Tuned against the
+/// simulated win-rate table in the tests below: a cherished stage-3 pet
+/// should beat the field comfortably but find the yard dog a genuine wall,
+/// and a neglected pet should scrape the odd win off the pup and little else.
 pub const ARCHETYPES: &[Archetype] = &[
-    Archetype { name: "an alley cat", hp_pct: 0, attack_pct: 0, defense_pct: 0, speed_pct: 10,
-        taunt: "sizes you up with total indifference" },
-    Archetype { name: "a yard dog", hp_pct: 30, attack_pct: -10, defense_pct: 25, speed_pct: -25,
-        taunt: "plants itself and refuses to move" },
-    Archetype { name: "a magpie", hp_pct: -30, attack_pct: 15, defense_pct: -20, speed_pct: 45,
-        taunt: "is already somewhere else" },
-    Archetype { name: "an old tom", hp_pct: -10, attack_pct: 35, defense_pct: -25, speed_pct: 0,
-        taunt: "has done this many times before" },
-    Archetype { name: "a hedgehog", hp_pct: 10, attack_pct: -30, defense_pct: 50, speed_pct: -20,
-        taunt: "rolls up and waits" },
-    Archetype { name: "a stray pup", hp_pct: -20, attack_pct: -20, defense_pct: -10, speed_pct: 5,
+    Archetype { name: "a stray pup", hp: 32, attack: 7, defense: 4, speed: 9,
         taunt: "wags its tail, apparently unaware this is a fight" },
+    Archetype { name: "an alley cat", hp: 58, attack: 14, defense: 10, speed: 13,
+        taunt: "sizes you up with total indifference" },
+    Archetype { name: "a magpie", hp: 40, attack: 18, defense: 5, speed: 20,
+        taunt: "is already somewhere else" },
+    Archetype { name: "a hedgehog", hp: 70, attack: 10, defense: 20, speed: 6,
+        taunt: "rolls up and waits" },
+    Archetype { name: "an old tom", hp: 58, attack: 16, defense: 8, speed: 12,
+        taunt: "has done this many times before" },
+    Archetype { name: "a yard dog", hp: 120, attack: 17, defense: 18, speed: 8,
+        taunt: "plants itself and refuses to move" },
 ];
 
 /// Growth stage derived from age alone: unmissable, unfarmable, and needing no
@@ -77,24 +84,27 @@ pub fn stats_for(pet: &Pet, now_ms: u64) -> Stats {
     }
 }
 
-fn tweak(base: u16, pct: i16) -> u16 {
-    let adjusted = i32::from(base) + i32::from(base) * i32::from(pct) / 100;
+/// ±10% seeded jitter, so two magpies are not clones without ever leaving the
+/// archetype's league.
+fn jitter(base: u16, rng: &mut Rng) -> u16 {
+    let pct = rng.below(21) as i32 - 10;
+    let adjusted = i32::from(base) + i32::from(base) * pct / 100;
     adjusted.clamp(1, 500) as u16
 }
 
 #[must_use]
-pub fn opponent_stats(mine: Stats, arch: &Archetype) -> Stats {
+pub fn opponent_stats(arch: &Archetype, rng: &mut Rng) -> Stats {
     Stats {
-        hp: tweak(mine.hp, arch.hp_pct),
-        attack: tweak(mine.attack, arch.attack_pct),
-        defense: tweak(mine.defense, arch.defense_pct),
-        speed: tweak(mine.speed, arch.speed_pct),
+        hp: jitter(arch.hp, rng),
+        attack: jitter(arch.attack, rng),
+        defense: jitter(arch.defense, rng),
+        speed: jitter(arch.speed, rng),
     }
 }
 
 /// Deterministic rolls from the fight's seed. Small and self-contained so the
 /// whole battle replays identically in a test.
-struct Rng(u32);
+pub struct Rng(pub u32);
 
 impl Rng {
     fn next(&mut self) -> u32 {
@@ -127,8 +137,13 @@ pub struct Report {
 
 fn strike(attacker: u16, defender_def: u16, rng: &mut Rng) -> (u16, bool) {
     let crit = rng.below(100) < 12;
-    let swing = rng.below(5); // 0..4
-    let mut dmg = i32::from(attacker) + i32::from(swing as u16) - i32::from(defender_def) / 2;
+    // Swing scales with attack and is centred on zero, so the mean stays
+    // attack − def/2 while single blows vary a lot. A flat ±4 made every fight
+    // a threshold function of the stat lines: the favourite won every replay,
+    // the underdog none, and one point of defense flipped entire seed sets.
+    let spread = u32::from(attacker) / 2 + 4;
+    let swing = rng.below(spread) as i32 - (spread as i32) / 2;
+    let mut dmg = i32::from(attacker) + swing - i32::from(defender_def) / 2;
     if crit {
         dmg = dmg * 3 / 2;
     }
@@ -138,9 +153,17 @@ fn strike(attacker: u16, defender_def: u16, rng: &mut Rng) -> (u16, bool) {
 /// Fight a generated opponent. Pure: same seed, same fight.
 #[must_use]
 pub fn fight(pet_name: &str, mine: Stats, seed: u32) -> Report {
+    let idx = (seed as usize >> 3) % ARCHETYPES.len();
+    fight_against(pet_name, mine, idx, seed)
+}
+
+/// Fight a specific archetype. Split out so the balance simulation in the
+/// tests can measure each opponent's win rate directly.
+#[must_use]
+pub fn fight_against(pet_name: &str, mine: Stats, idx: usize, seed: u32) -> Report {
     let mut rng = Rng(seed ^ 0x9E37_79B9);
-    let arch = &ARCHETYPES[(seed as usize >> 3) % ARCHETYPES.len()];
-    let foe = opponent_stats(mine, arch);
+    let arch = &ARCHETYPES[idx % ARCHETYPES.len()];
+    let foe = opponent_stats(arch, &mut rng);
 
     let mut my_hp = i32::from(mine.hp);
     let mut foe_hp = i32::from(foe.hp);
@@ -335,10 +358,86 @@ mod tests {
     }
 
     #[test]
-    fn opponents_scale_with_the_pet_rather_than_being_fixed() {
-        let weak = Stats { hp: 40, attack: 6, defense: 4, speed: 5 };
-        let strong = Stats { hp: 85, attack: 20, defense: 16, speed: 16 };
+    fn opponents_are_what_they_are_regardless_of_the_challenger() {
+        // The regression this guards: mirrored opponents made care worthless,
+        // because a feeble pet met proportionally feeble opposition.
         let arch = &ARCHETYPES[0];
-        assert!(opponent_stats(strong, arch).attack > opponent_stats(weak, arch).attack);
+        let a = opponent_stats(arch, &mut Rng(7));
+        let b = opponent_stats(arch, &mut Rng(7));
+        assert_eq!(a, b, "same seed, same creature");
+        assert!(a.hp >= arch.hp * 9 / 10 && a.hp <= arch.hp * 11 / 10, "jitter stays in league");
+    }
+
+    // ---- balance simulation ----
+    //
+    // Three care tiers, measured against every archetype over the same seed
+    // set. These bands ARE the design: care must shift the odds, the yard dog
+    // must stay a genuine wall even for a cherished pet, and nothing may be
+    // perfectly hopeless.
+
+    fn peak() -> Stats {
+        // Stage 3, everything at 100, healthy.
+        Stats { hp: 85, attack: 20, defense: 16, speed: 16 }
+    }
+    fn mid() -> Stats {
+        // Stage 1, everything around 60.
+        Stats { hp: 55, attack: 14, defense: 13, speed: 11 }
+    }
+    fn neglected() -> Stats {
+        // Stage 0, run down and sick.
+        Stats { hp: 40, attack: 7, defense: 3, speed: 7 }
+    }
+
+    fn win_rate(mine: Stats, idx: usize, n: u32) -> f64 {
+        let wins = (0..n)
+            .filter(|s| fight_against("Rex", mine, idx, s.wrapping_mul(2_654_435_761)).won)
+            .count();
+        f64::from(wins as u32) / f64::from(n)
+    }
+
+    #[test]
+    #[ignore = "diagnostic: prints the full win-rate table for tuning"]
+    fn print_the_win_rate_table() {
+        for (i, a) in ARCHETYPES.iter().enumerate() {
+            println!(
+                "{:<14} peak {:>5.1}%  mid {:>5.1}%  neglected {:>5.1}%",
+                a.name,
+                win_rate(peak(), i, 2000) * 100.0,
+                win_rate(mid(), i, 2000) * 100.0,
+                win_rate(neglected(), i, 2000) * 100.0,
+            );
+        }
+    }
+
+    #[test]
+    fn care_shifts_the_odds_against_every_single_opponent() {
+        for (i, a) in ARCHETYPES.iter().enumerate() {
+            let p = win_rate(peak(), i, 1000);
+            let m = win_rate(mid(), i, 1000);
+            let n = win_rate(neglected(), i, 1000);
+            // Monotone across tiers, and strictly better from bottom to top —
+            // the ends may saturate (peak sweeps the pup, everyone fails the
+            // dog at mid), so strictness between adjacent tiers would demand
+            // impossible resolution from a 0..=100% scale.
+            assert!(p >= m && m >= n, "{}: {p:.2} / {m:.2} / {n:.2} not monotone", a.name);
+            assert!(p > n, "{}: care must matter, got peak {p:.2} vs neglected {n:.2}", a.name);
+        }
+    }
+
+    #[test]
+    fn the_yard_dog_is_a_wall_but_not_a_locked_door() {
+        let idx = ARCHETYPES.iter().position(|a| a.name == "a yard dog").unwrap();
+        let p = win_rate(peak(), idx, 2000);
+        assert!(
+            (0.20..=0.50).contains(&p),
+            "a cherished pet should win sometimes and lose often: got {p:.2}"
+        );
+    }
+
+    #[test]
+    fn the_pup_gives_even_a_neglected_pet_the_odd_win() {
+        let idx = ARCHETYPES.iter().position(|a| a.name == "a stray pup").unwrap();
+        let n = win_rate(neglected(), idx, 2000);
+        assert!(n > 0.05, "perfectly hopeless fights are not fun: got {n:.2}");
     }
 }
