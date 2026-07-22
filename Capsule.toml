@@ -1,0 +1,47 @@
+[package]
+name = "aos-pet"
+version = "0.1.0"
+description = "A virtual pet whose condition decays in real time. The capsule is the referee: state lives in the sandbox and cannot be faked."
+astrid-version = ">=0.7.0"
+
+[[component]]
+id = "aos-pet"
+file = "aos_pet.wasm"
+type = "executable"
+
+# Principal-scoped key/value storage is the entire persistence layer — no
+# database, no backend. One key per capsule yields one pet per user.
+[capabilities]
+kv = []
+# Required for the prompt hook: without it the builder silently strips
+# appendSystemContext and the injected text never reaches the model.
+allow_prompt_injection = true
+
+[env]
+decay_scale = { type = "string", default = "1.0", request = "Decay speed multiplier (1.0 = real time, 60 = one hour per minute)" }
+
+[publish]
+"tool.v1.execute.*.result" = { wit = "@unicity-astrid/wit/types/tool-call-result" }
+"tool.v1.response.describe.*" = { wit = "@unicity-astrid/wit/tool/describe-response" }
+"prompt_builder.v1.hook_response.*" = { wit = "@unicity-astrid/wit/prompt/before-build-hook-response" }
+
+# Every tool needs its OWN concrete execute row: a wildcard authorises the topic
+# but does not dispatch to a handler (static dispatch is segment-arity matched).
+[subscribe]
+"tool.v1.execute.pet_adopt" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_pet_adopt" }
+"tool.v1.execute.pet_status" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_pet_status" }
+"tool.v1.execute.pet_feed" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_pet_feed" }
+"tool.v1.execute.pet_play" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_pet_play" }
+"tool.v1.execute.pet_sleep" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_pet_sleep" }
+"tool.v1.execute.pet_clean" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_pet_clean" }
+"tool.v1.execute.pet_heal" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_pet_heal" }
+"tool.v1.execute.pet_alerts" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_pet_alerts" }
+"tool.v1.request.describe" = { wit = "@unicity-astrid/wit/tool/describe-request", handler = "tool_describe" }
+
+# Kernel heartbeat (~every 5s). Needs no capability and no publish row; this is
+# how the pet notices it got hungry while nobody was looking.
+"astrid.v1.watchdog.tick" = { wit = "@unicity-astrid/wit/system/watchdog-tick", handler = "handle_watchdog_tick" }
+
+# Fold the pet's condition into the agent's system prompt. Lower priority runs
+# earlier; 90 puts us just ahead of the default-100 injectors.
+"prompt_builder.v1.hook.before_build" = { wit = "@unicity-astrid/wit/prompt/before-build-hook", handler = "on_before_prompt_build", priority = 90 }
