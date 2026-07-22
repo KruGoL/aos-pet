@@ -8,6 +8,7 @@
 mod art;
 mod config;
 mod decay;
+mod game;
 mod model;
 mod mood;
 mod render;
@@ -38,6 +39,18 @@ pub struct AdoptArgs {
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 pub struct NoArgs {}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct RenameArgs {
+    /// The pet's new name. Everything else — age, stats, history — is kept.
+    pub name: String,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct GuessArgs {
+    /// Your guess, within the range the game reported when it started.
+    pub value: u32,
+}
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 pub struct SleepArgs {
@@ -82,6 +95,20 @@ pub struct AlertsView {
     pub alerts: Vec<AlertOut>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct GameView {
+    /// What just happened, phrased for the player.
+    pub message: String,
+    /// Whether a round is still in progress.
+    pub active: bool,
+    pub guesses_used: u32,
+    pub guesses_left: u32,
+    /// The playable range, e.g. "1-20".
+    pub range: String,
+    /// The pet, so callers can show it reacting.
+    pub pet: PetView,
+}
+
 // ------------------------------------------------------------------ helpers
 
 fn stat_add(stat: u8, delta: u8) -> u8 {
@@ -108,6 +135,35 @@ fn now_ms() -> Result<u64, SysError> {
 
 fn save(pet: &Pet) -> Result<(), SysError> {
     kv::set_json(KV_KEY, pet)
+}
+
+/// A secret the model cannot predict. Real host entropy, never the clock — a
+/// clock-derived number would be reproducible by anything that can read the
+/// time, which defeats the whole point of hiding it.
+fn pick_secret() -> Result<u32, SysError> {
+    let mut buf = [0u8; 4];
+    getrandom::fill(&mut buf)
+        .map_err(|e| SysError::ApiError(format!("no randomness available: {e}")))?;
+    Ok(game::secret_from_bytes(buf))
+}
+
+fn game_view(
+    pet: &Pet,
+    now: u64,
+    message: impl Into<String>,
+    active: bool,
+    used: u32,
+    left: u32,
+) -> GameView {
+    let message = message.into();
+    GameView {
+        pet: view(pet, now, message.clone()),
+        message,
+        active,
+        guesses_used: used,
+        guesses_left: left,
+        range: format!("{}-{}", game::MIN, game::MAX),
+    }
 }
 
 /// Load the pet and bring it up to date, recording any thresholds crossed
@@ -334,6 +390,121 @@ impl Capsule {
                 })
                 .collect(),
         })
+    }
+
+    /// Rename the pet, keeping its age, stats and history. Use this rather than
+    /// adopting again — adopting replaces the pet and resets everything.
+    #[astrid::tool("pet_rename")]
+    pub fn pet_rename(&self, args: RenameArgs) -> Result<PetView, SysError> {
+        let cfg = load_config();
+        let now = now_ms()?;
+        let mut pet = current(now, &cfg)?;
+
+        let old = pet.name.clone();
+        let new = Pet::sanitize_name(&args.name);
+        if new == old {
+            let msg = format!("{old} already answers to that name.");
+            return commit(&pet, now, msg);
+        }
+        pet.name = new.clone();
+        log::info(format!("[aos-pet] renamed {old} -> {new}"));
+        let msg = format!("{old} will answer to {new} from now on.");
+        commit(&pet, now, msg)
+    }
+
+    /// Play a guessing game with the pet. The capsule picks a secret number and
+    /// keeps it inside the sandbox, so you and the agent both genuinely have to
+    /// guess — winning cheers the pet up far more than plain play.
+    #[astrid::tool("pet_game_start")]
+    pub fn pet_game_start(&self, _args: NoArgs) -> Result<GameView, SysError> {
+        let cfg = load_config();
+        let now = now_ms()?;
+        let mut pet = current(now, &cfg)?;
+        refuse_if_asleep(&pet)?;
+
+        if pet.sick {
+            return Err(SysError::ApiError(format!(
+                "{} is too ill for games. Try pet_heal first.",
+                pet.name
+            )));
+        }
+        if pet.energy < game::ENERGY_COST {
+            save(&pet)?;
+            let msg = format!("{} is too tired to play — it needs rest.", pet.name);
+            return Ok(game_view(&pet, now, msg, false, 0, 0));
+        }
+
+        let g = game::Game::new(pick_secret()?, now);
+        pet.energy = stat_sub(pet.energy, game::ENERGY_COST);
+        save(&pet)?;
+        kv::set_json(game::KV_GAME, &g)?;
+
+        let msg = format!(
+            "{} is thinking of a number between {} and {}. You have {} guesses — call pet_game_guess.",
+            pet.name,
+            game::MIN,
+            game::MAX,
+            game::MAX_GUESSES
+        );
+        Ok(game_view(&pet, now, msg, true, 0, game::MAX_GUESSES))
+    }
+
+    /// Make a guess in the running game. The capsule alone knows the answer, so
+    /// the hints it returns are the only information anyone gets.
+    #[astrid::tool("pet_game_guess")]
+    pub fn pet_game_guess(&self, args: GuessArgs) -> Result<GameView, SysError> {
+        let cfg = load_config();
+        let now = now_ms()?;
+        let mut pet = current(now, &cfg)?;
+
+        let Some(mut g) = kv::get_json_opt::<game::Game>(game::KV_GAME)? else {
+            return Err(SysError::ApiError(
+                "No game in progress. Call pet_game_start to begin one.".to_string(),
+            ));
+        };
+
+        let outcome = game::guess(&mut g, args.value);
+        let warmth = game::warmth(g.secret, args.value);
+
+        let msg = match outcome {
+            game::Outcome::OutOfRange => {
+                kv::set_json(game::KV_GAME, &g)?;
+                save(&pet)?;
+                let msg = format!(
+                    "{} is only between {} and {} — that one does not count.",
+                    args.value,
+                    game::MIN,
+                    game::MAX
+                );
+                return Ok(game_view(&pet, now, msg, true, g.guesses, g.guesses_left()));
+            }
+            game::Outcome::Won { guesses, reward } => {
+                pet.happiness = stat_add(pet.happiness, reward);
+                kv::delete(game::KV_GAME)?;
+                save(&pet)?;
+                let msg = format!(
+                    "{} it is — guessed in {guesses}! {} is delighted (+{reward} happiness).",
+                    args.value, pet.name
+                );
+                return Ok(game_view(&pet, now, msg, false, guesses, 0));
+            }
+            game::Outcome::Lost { secret } => {
+                kv::delete(game::KV_GAME)?;
+                save(&pet)?;
+                let msg = format!(
+                    "Out of guesses — {} was thinking of {secret}. Another round?",
+                    pet.name
+                );
+                return Ok(game_view(&pet, now, msg, false, g.guesses, 0));
+            }
+            game::Outcome::Lower => format!("Lower than {} ({warmth}).", args.value),
+            game::Outcome::Higher => format!("Higher than {} ({warmth}).", args.value),
+        };
+
+        kv::set_json(game::KV_GAME, &g)?;
+        save(&pet)?;
+        let msg = format!("{msg} {} guesses left.", g.guesses_left());
+        Ok(game_view(&pet, now, msg, true, g.guesses, g.guesses_left()))
     }
 
     /// Kernel watchdog tick — fires roughly every 5 seconds while the daemon

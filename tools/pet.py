@@ -208,6 +208,14 @@ def show(tool, response):
     if err:
         print(f"[{tool}] {err}")
         return
+    # A GameView wraps the pet plus the round's state.
+    if isinstance(data, dict) and "pet" in data and isinstance(data["pet"], dict):
+        print()
+        print(data["pet"].get("display", ""))
+        print(f"  >> {data.get('message', '')}")
+        if data.get("active"):
+            print(f"  ({data.get('guesses_left')} guesses left, range {data.get('range')})")
+        return
     if isinstance(data, dict) and "display" in data:
         print()
         print(data["display"])
@@ -244,6 +252,41 @@ def watch(session, seconds):
         sys.stdout.flush()
         frame += 1
         time.sleep(1)
+
+
+def autoplay(session):
+    """Start a round and binary-search it. Proves the hints are real: the
+    secret is inside the capsule, so this can only work if they are honest."""
+    data, err = unpack(session.call("pet_game_start", {}))
+    if err:
+        print(err)
+        return
+    print(f"  {data.get('message','')}")
+    lo, hi = 1, 20
+    try:
+        lo, hi = (int(x) for x in str(data.get("range", "1-20")).split("-"))
+    except ValueError:
+        pass
+
+    while True:
+        value = (lo + hi) // 2
+        data, err = unpack(session.call("pet_game_guess", {"value": value}))
+        if err:
+            print(err)
+            return
+        message = data.get("message", "")
+        print(f"  guess {value:>2}  ->  {message}")
+        if not data.get("active"):
+            print()
+            print(data.get("pet", {}).get("display", ""))
+            return
+        low = message.lower()
+        if low.startswith("lower"):
+            hi = value - 1
+        elif low.startswith("higher"):
+            lo = value + 1
+        else:
+            return  # out-of-range or something unexpected; stop rather than loop
 
 
 def daemon(interval):
@@ -357,6 +400,20 @@ def main():
         elif cmd == "sleep":
             wake = len(argv) > 1 and argv[1] == "wake"
             show("pet_sleep", session.call("pet_sleep", {"wake": wake}))
+        elif cmd == "rename":
+            if len(argv) < 2:
+                print("usage: pet.py rename <new name>")
+                return
+            show("pet_rename", session.call("pet_rename", {"name": " ".join(argv[1:])}))
+        elif cmd == "game":
+            show("pet_game_start", session.call("pet_game_start", {}))
+        elif cmd == "autoplay":
+            autoplay(session)
+        elif cmd == "guess":
+            if len(argv) < 2 or not argv[1].isdigit():
+                print("usage: pet.py guess <number>")
+                return
+            show("pet_game_guess", session.call("pet_game_guess", {"value": int(argv[1])}))
         elif cmd == "watch":
             watch(session, int(argv[1]) if len(argv) > 1 else 20)
         elif cmd == "demo":

@@ -12,6 +12,10 @@ crate-type = ["cdylib"]
 astrid-sdk = { version = "0.7", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# The guessing game needs a secret the model cannot predict. On wasm32 this
+# resolves through astrid-sys's custom backend to `astrid:sys.random-bytes`;
+# on the host (unit tests) it uses the OS source.
+getrandom = { version = "0.4", default-features = false }
 
 [profile.release]
 opt-level = "z"

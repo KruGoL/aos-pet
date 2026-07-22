@@ -13,6 +13,7 @@ name = "aos-pet"
 version = "0.1.0"
 dependencies = [
  "astrid-sdk",
+ "getrandom",
  "serde",
  "serde_json",
 ]

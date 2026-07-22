@@ -398,6 +398,11 @@ Built, installed and played live on AOS 2026.1.3 (WSL Ubuntu 24.04).
 | 6 viewer | **done** | `tools/pet.py` incl. `watch` animated mode, self-healing daemon |
 
 Verified extras worth remembering:
+- ⚠️ **`aos capsule install` hot-reload does NOT register new IPC topics.** It reports "Live: the
+  running daemon loaded 'aos-pet'" and picks up changed code for *existing* wiring, but tools added
+  with new `[subscribe]` rows are invisible until `aos restart`. Symptom: the new tool times out
+  ("did not respond within 50s") while the old ones still work, and the MCP broker lists only the
+  previous tool set. Cost us a confused debugging round on the v1.1 tools.
 - Host unit tests need an explicit target — `.cargo/config.toml` forces wasm32, so use
   `cargo test --target x86_64-unknown-linux-gnu`. `astrid-sdk` does compile for the host.
 - `aos capsule install` hot-reloads into a running daemon: "Live: the running daemon

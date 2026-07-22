@@ -50,8 +50,30 @@ Three ideas it demonstrates concretely:
 | `pet_clean` | Cleanliness → 100 |
 | `pet_heal` | Cure illness |
 | `pet_alerts` | What happened while you were away |
+| `pet_rename` | Rename without losing age, stats or history |
+| `pet_game_start` | Begin a guessing round |
+| `pet_game_guess` | Make a guess |
 
 Neglect makes the pet **ill, never dead** — healing always works.
+
+### A game the agent cannot cheat at
+
+`pet_game_start` picks a number between 1 and 20 and stores it in the capsule's KV — *inside the
+sandbox*. The model sees only the hints, never the secret, so it has to genuinely play:
+
+```
+guess 10  ->  Lower than 10 (burning hot). 5 guesses left.
+guess  5  ->  Higher than 5 (warm). 4 guesses left.
+guess  7  ->  Higher than 7 (burning hot). 3 guesses left.
+guess  8  ->  8 it is — guessed in 4! Rex is delighted (+18 happiness).
+```
+
+Six attempts; the reward shrinks the longer you take and a round costs energy, so it cannot be farmed.
+The secret comes from real host entropy (`astrid:sys.random-bytes`), never the clock — a
+clock-derived number would be reproducible by anything that can read the time.
+
+`python3 tools/pet.py autoplay` binary-searches a round automatically, which doubles as proof the
+hints are honest.
 
 ## Install
 
