@@ -53,7 +53,11 @@ pub fn advance(pet: &mut Pet, now_ms: u64, cfg: &Config) -> Vec<AlertKind> {
     let sad_mult = if pet.sick { cfg.sick_decay_factor } else { 1.0 };
 
     pet.fullness = drop_stat(pet.fullness, cfg.fullness_per_hour * slow, hours);
-    pet.happiness = drop_stat(pet.happiness, cfg.happiness_per_hour * slow * sad_mult, hours);
+    // Happiness deliberately ignores `slow`. If sleep paused everything it would
+    // be a strictly dominant move — cheap to enter, cheap to leave, decay almost
+    // halted — and the optimal way to play would be to keep the pet in a coma.
+    // Making it trade mood for energy turns sleep into an actual decision.
+    pet.happiness = drop_stat(pet.happiness, cfg.happiness_per_hour * sad_mult, hours);
     pet.cleanliness = drop_stat(pet.cleanliness, cfg.cleanliness_per_hour * slow, hours);
     pet.energy = if pet.sleeping {
         raise_stat(pet.energy, cfg.energy_recovery_per_hour, hours)
@@ -152,6 +156,25 @@ mod tests {
             asleep.fullness > awake.fullness,
             "other stats decay slower while asleep"
         );
+    }
+
+    #[test]
+    fn sleep_does_not_shelter_happiness() {
+        // Regression guard for the coma strategy: if sleeping slowed every stat,
+        // parking the pet asleep would dominate actually looking after it.
+        let cfg = Config::default();
+        let mut awake = pet_at(0);
+        let mut asleep = pet_at(0);
+        asleep.sleeping = true;
+
+        advance(&mut awake, 6 * HOUR, &cfg);
+        advance(&mut asleep, 6 * HOUR, &cfg);
+
+        assert_eq!(
+            asleep.happiness, awake.happiness,
+            "a sleeping pet must get just as lonely as a waking one"
+        );
+        assert!(asleep.energy > awake.energy, "sleep still pays in energy");
     }
 
     #[test]

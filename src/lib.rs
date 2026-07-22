@@ -8,7 +8,9 @@
 mod art;
 mod config;
 mod decay;
+mod economy;
 mod game;
+mod moment;
 mod model;
 mod mood;
 mod render;
@@ -22,6 +24,7 @@ use model::{AlertKind, Pet, KV_KEY};
 
 const FEED_GAIN: u8 = 30;
 const FEED_JOY: u8 = 5;
+const CLEAN_JOY: u8 = 8;
 const PLAY_GAIN: u8 = 25;
 const PLAY_ENERGY_COST: u8 = 15;
 const HEAL_BOOST: u8 = 20;
@@ -273,15 +276,24 @@ impl Capsule {
         let mut pet = current(now, &cfg)?;
         refuse_if_asleep(&pet)?;
 
-        if pet.fullness >= 100 {
-            let msg = format!("{} is completely full and turns away.", pet.name);
+        // Pressing food on a pet that does not want it is fussing, not care.
+        if economy::is_overserving(pet.fullness) {
+            pet.happiness = stat_sub(pet.happiness, economy::OVERSERVE_PENALTY);
+            pet.last_fed_ms = now;
+            let msg = format!("{} is already full and turns away from the bowl.", pet.name);
             return commit(&pet, now, msg);
         }
+
+        let ready = economy::readiness(pet.last_fed_ms, now, cfg.feed_ideal_hours, cfg.scale);
         pet.fullness = stat_add(pet.fullness, FEED_GAIN);
-        pet.happiness = stat_add(pet.happiness, FEED_JOY);
+        pet.happiness = stat_add(pet.happiness, economy::payoff(FEED_JOY, ready));
+        pet.last_fed_ms = now;
+
         let msg = format!(
-            "{} munches happily. Fullness is now {}.",
-            pet.name, pet.fullness
+            "{} munches happily. Fullness is now {}.{}",
+            pet.name,
+            pet.fullness,
+            economy::payoff_note(ready)
         );
         commit(&pet, now, msg)
     }
@@ -305,9 +317,16 @@ impl Capsule {
             let msg = format!("{} is too tired to play — it needs rest.", pet.name);
             return commit(&pet, now, msg);
         }
-        pet.happiness = stat_add(pet.happiness, PLAY_GAIN);
+        let ready = economy::readiness(pet.last_played_ms, now, cfg.play_ideal_hours, cfg.scale);
+        pet.happiness = stat_add(pet.happiness, economy::payoff(PLAY_GAIN, ready));
         pet.energy = stat_sub(pet.energy, PLAY_ENERGY_COST);
-        let msg = format!("You play together. {} is delighted!", pet.name);
+        pet.last_played_ms = now;
+
+        let msg = format!(
+            "You play together. {} is delighted!{}",
+            pet.name,
+            economy::payoff_note(ready)
+        );
         commit(&pet, now, msg)
     }
 
@@ -343,8 +362,23 @@ impl Capsule {
         let mut pet = current(now, &cfg)?;
         refuse_if_asleep(&pet)?;
 
+        if economy::is_overserving(pet.cleanliness) {
+            pet.happiness = stat_sub(pet.happiness, economy::OVERSERVE_PENALTY);
+            pet.last_cleaned_ms = now;
+            let msg = format!("{} is already spotless and squirms away from the water.", pet.name);
+            return commit(&pet, now, msg);
+        }
+
+        let ready = economy::readiness(pet.last_cleaned_ms, now, cfg.clean_ideal_hours, cfg.scale);
         pet.cleanliness = 100;
-        let msg = format!("{} is scrubbed clean and smells lovely.", pet.name);
+        pet.happiness = stat_add(pet.happiness, economy::payoff(CLEAN_JOY, ready));
+        pet.last_cleaned_ms = now;
+
+        let msg = format!(
+            "{} is scrubbed clean and smells lovely.{}",
+            pet.name,
+            economy::payoff_note(ready)
+        );
         commit(&pet, now, msg)
     }
 

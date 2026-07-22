@@ -33,6 +33,14 @@ pub struct Pet {
     /// Accumulated time spent with a stat pinned at zero.
     #[serde(default)]
     pub neglect_ms: u64,
+    /// When each kind of care last happened, for the readiness economy.
+    /// Zero means "never", which pays in full — see `economy::readiness`.
+    #[serde(default)]
+    pub last_fed_ms: u64,
+    #[serde(default)]
+    pub last_played_ms: u64,
+    #[serde(default)]
+    pub last_cleaned_ms: u64,
     #[serde(default)]
     pub alerts: Vec<Alert>,
     #[serde(default)]
@@ -55,6 +63,14 @@ pub enum AlertKind {
     Dirty,
     Sick,
     Recovered,
+    /// The pet put itself to bed rather than waiting to be told.
+    DozedOff,
+    /// Slept itself out and got up again.
+    WokeUp,
+    /// Bored with energy to burn, so it found its own entertainment.
+    AmusedItself,
+    /// A rare moment began. The message carries which one.
+    Moment,
 }
 
 impl AlertKind {
@@ -67,6 +83,11 @@ impl AlertKind {
             Self::Dirty => format!("{name} could use a wash."),
             Self::Sick => format!("{name} has fallen ill and needs healing."),
             Self::Recovered => format!("{name} is feeling healthy again!"),
+            Self::DozedOff => format!("{name} curled up and fell asleep on its own."),
+            Self::WokeUp => format!("{name} slept itself out and got up."),
+            Self::AmusedItself => format!("{name} got bored and found something to do."),
+            // Moments carry their own text; this is only the fallback.
+            Self::Moment => format!("{name} is having a moment."),
         }
     }
 }
@@ -86,6 +107,9 @@ impl Pet {
             sleeping: false,
             sick: false,
             neglect_ms: 0,
+            last_fed_ms: 0,
+            last_played_ms: 0,
+            last_cleaned_ms: 0,
             alerts: Vec::new(),
             last_alert_ms: 0,
         }
