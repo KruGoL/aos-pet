@@ -44,19 +44,27 @@ Three ideas it demonstrates concretely:
 |---|---|
 | `pet_adopt` | Adopt a pet and name it (`replace: true` to start over) |
 | `pet_status` | Art, mood and every stat bar |
-| `pet_feed` | Fullness ↑ |
+| `pet_feed` | Fullness ↑ — refused with a small happiness penalty if already sated (see below) |
 | `pet_play` | Happiness ↑, energy ↓ — refuses if asleep or physically ill |
 | `pet_sleep` | Sleep / wake (`wake: true`). Energy recovers while asleep |
-| `pet_clean` | Cleanliness → 100 |
-| `pet_heal` | Medicine — eases illness, but never a substitute for care |
+| `pet_clean` | Cleanliness → 100 — same overserve rule as feeding |
+| `pet_heal` | Medicine — eases famine and grime, never cures alone, cannot touch gloom |
 | `pet_alerts` | What happened while you were away |
 | `pet_rename` | Rename without losing age, stats or history |
-| `pet_game_start` | Begin a guessing round |
+| `pet_game_start` | Begin a guessing round — costs energy, same refusals as play |
 | `pet_game_guess` | Make a guess |
 | `pet_moments` | The collection — which rare moments you have witnessed |
-| `pet_battle` | A friendly scrap with a passing stranger |
+| `pet_battle` | A friendly scrap with a passing stranger — refuses while ill or tired |
 
 Neglect makes the pet **ill, never dead** — every illness is always curable.
+
+**Overserving is refused.** At 90+ a need counts as fully served: pressing more
+food (or another wash) on the pet is fussing, so it turns away and loses a
+little happiness — and the refused attempt deliberately does not restart the
+reward clock, so it cannot be farmed. One exception: while the matching ailment
+is still being cured, care is never refused — a pet *weak from hunger* is always
+allowed to eat and one *itchy and sore from the dirt* is always allowed a wash,
+because "do it regularly" is exactly what those cures demand.
 
 ### Three illnesses, three different cures
 
@@ -241,11 +249,15 @@ multi-row status bar, so the poller also keeps a four-line layout in
 
 ```
 [0] 0:astrid*
-    /\_/\        Мурзик · content · 2d
-   ( o.o )       f [##########] 100   h [########--]  80
-    > _ <        e [######----]  60   c [##########] 100
-                 * ill — needs healing
+    /\_/\                     Мурзик · content · 2d
+   ( o.o )                    f [##########] 100   h [########--]  80
+    > _ <                     e [######----]  60   c [##########] 100
+                              * weak from hunger
 ```
+
+(The art column is 29 characters wide — sized to the widest frame the capsule
+can emit, so the fx like `~rumble~` or a moment's `~vroom~` never gets clipped
+and the bars stay aligned.)
 
 ```tmux
 set -g status 5
@@ -279,8 +291,9 @@ testable on the host with no WASM and no running AOS:
 cargo test --target x86_64-unknown-linux-gnu
 ```
 
-39 unit tests cover decay over long absences, clocks moving backwards, edge-triggered
-alerts, illness onset and cure, mood boundaries, bar rendering and state migration.
+The unit-test suite (120+ tests) covers decay over long absences, clocks moving
+backwards, edge-triggered alerts, illness onset and cure, mood boundaries, bar
+rendering and state migration.
 
 ```sh
 aos capsule check      # validates macro ↔ manifest wiring

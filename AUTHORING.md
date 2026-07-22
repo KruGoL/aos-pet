@@ -200,14 +200,14 @@ The `wit/` directory is **generated at build time** and embedded in the
 ## The dev loop: build → install → call
 
 ```sh
-# 1. Build and package. `astrid capsule build` reads .cargo/config.toml for the
+# 1. Build and package. `aos capsule build` reads .cargo/config.toml for the
 #    target, compiles to wasm32-unknown-unknown, stages the wit/, and packs a
 #    .capsule archive under dist/. (A plain `cargo build` produces only the raw
-#    .wasm — use `astrid capsule build` to get an installable archive.)
-astrid capsule build
+#    .wasm — use `aos capsule build` to get an installable archive.)
+aos capsule build
 
 # 2. Install into the running daemon.
-astrid capsule install ./dist/aos-pet.capsule
+aos capsule install ./dist/aos-pet.capsule
 
 # 3. The tools are now discoverable. Once installed, the capsule's tools are
 #    described to the agent automatically (via tool_describe), so the LLM can
