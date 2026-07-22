@@ -23,7 +23,7 @@ use astrid_sdk::schemars;
 use serde::{Deserialize, Serialize};
 
 use config::Config;
-use model::{AlertKind, Pet, KV_KEY};
+use model::{AlertKind, Decoded, Pet, KV_CORRUPT, KV_KEY};
 
 const FEED_GAIN: u8 = 30;
 const FEED_JOY: u8 = 5;
@@ -241,11 +241,37 @@ fn tick_pet(pet: &mut Pet, now: u64, cfg: &Config) {
     }
 }
 
+/// Read the stored pet record, turning every non-happy shape into an
+/// actionable error. `Ok(None)` means no record exists at all.
+///
+/// This is the single place a bad record is translated for the player: a raw
+/// serde error out of every tool would brick the capsule with no visible way
+/// back, and a record from a newer build must not be reinterpreted under this
+/// build's rules. Both errors name `pet_adopt` replace=true as the way out.
+fn load_pet() -> Result<Option<Pet>, SysError> {
+    let Some(bytes) = kv::get_bytes_opt(KV_KEY)? else {
+        return Ok(None);
+    };
+    match model::decode_stored(&bytes) {
+        Decoded::Pet(pet) => Ok(Some(pet)),
+        Decoded::Newer(v) => Err(SysError::ApiError(format!(
+            "Your pet record was saved by a newer capsule (record v{v}, this build reads \
+             up to v{}). Upgrade the capsule, or call pet_adopt with replace=true to start over.",
+            model::STATE_VERSION
+        ))),
+        Decoded::Corrupt(_) => Err(SysError::ApiError(
+            "Your pet's saved record is unreadable. Call pet_adopt with replace=true to \
+             start over — the broken record will be kept aside, not destroyed."
+                .to_string(),
+        )),
+    }
+}
+
 /// Load the pet and bring it up to date. Player-facing only — the watchdog
 /// deliberately does not come through here, so that witnessing a moment
 /// requires somebody to actually look.
 fn current(now: u64, cfg: &Config) -> Result<Pet, SysError> {
-    let mut pet = kv::get_json_opt::<Pet>(KV_KEY)?.ok_or_else(|| {
+    let mut pet = load_pet()?.ok_or_else(|| {
         SysError::ApiError(
             "You have no pet yet. Call pet_adopt with a name to adopt one.".to_string(),
         )
@@ -343,14 +369,51 @@ impl Capsule {
     #[astrid::tool("pet_adopt")]
     pub fn pet_adopt(&self, args: AdoptArgs) -> Result<PetView, SysError> {
         let now = now_ms()?;
-        if let Some(existing) = kv::get_json_opt::<Pet>(KV_KEY)? {
-            if !args.replace {
-                return Err(SysError::ApiError(format!(
-                    "You already care for {}. Pass replace=true to start over.",
-                    existing.name
-                )));
+        // Decode by hand instead of going through `load_pet`: adopt IS the
+        // recovery path for a bad record, so it must not die on the very
+        // error it exists to fix. A corrupt or too-new record still counts
+        // as "there is a pet" and needs the same explicit replace consent.
+        if let Some(bytes) = kv::get_bytes_opt(KV_KEY)? {
+            match model::decode_stored(&bytes) {
+                Decoded::Pet(existing) if !args.replace => {
+                    return Err(SysError::ApiError(format!(
+                        "You already care for {}. Pass replace=true to start over.",
+                        existing.name
+                    )));
+                }
+                Decoded::Newer(v) if !args.replace => {
+                    return Err(SysError::ApiError(format!(
+                        "A pet record from a newer capsule (v{v}) already exists. Upgrade \
+                         the capsule to keep it, or pass replace=true to start over.",
+                    )));
+                }
+                Decoded::Corrupt(_) if !args.replace => {
+                    return Err(SysError::ApiError(
+                        "An existing pet record is there but unreadable. Pass replace=true \
+                         to adopt a new pet; the broken record will be kept aside."
+                            .to_string(),
+                    ));
+                }
+                Decoded::Corrupt(why) => {
+                    // Park the raw bytes before overwriting: corruption must
+                    // never silently destroy data. The copy stays under its
+                    // own key for inspection or hand recovery, and the parse
+                    // failure goes to the log — the one place the raw serde
+                    // reason is useful — rather than at the player.
+                    kv::set_bytes(KV_CORRUPT, &bytes)?;
+                    log::info(format!(
+                        "[aos-pet] unreadable record preserved under {KV_CORRUPT}: {why}"
+                    ));
+                }
+                // replace=true over a readable record: plain abandonment.
+                _ => {}
             }
         }
+        // A new pet must not inherit the previous pet's in-flight guessing
+        // round — its secret and spent energy belonged to a pet that no
+        // longer exists. Idempotent, so the fresh-adopt path is free too.
+        kv::delete(game::KV_GAME)?;
+
         let pet = Pet::new(Pet::sanitize_name(&args.name), now);
         let greeting = format!("{} hops out of the box and looks up at you!", pet.name);
         log::info(format!("[aos-pet] adopted {}", pet.name));
@@ -809,7 +872,13 @@ impl Capsule {
     pub fn handle_watchdog_tick(&self) -> Result<(), SysError> {
         let cfg = load_config();
         let now = now_ms()?;
-        let Some(mut pet) = kv::get_json_opt::<Pet>(KV_KEY)? else {
+        // Only a readable record is tickable. A corrupt or too-new one is
+        // the player's problem to fix through pet_adopt; failing here would
+        // just have the kernel deny this handler every 5 seconds.
+        let Some(bytes) = kv::get_bytes_opt(KV_KEY)? else {
+            return Ok(());
+        };
+        let Decoded::Pet(mut pet) = model::decode_stored(&bytes) else {
             return Ok(());
         };
 
@@ -845,8 +914,14 @@ impl Capsule {
         let Some(topic) = payload.get("response_topic").and_then(|v| v.as_str()) else {
             return Ok(());
         };
-        let Some(mut pet) = kv::get_json_opt::<Pet>(KV_KEY)? else {
-            return Ok(()); // no pet adopted — say nothing
+        // Say nothing when there is no pet — and equally when the record is
+        // unreadable or from a newer build: the prompt hook has no player to
+        // hand an error to, and failing it would only poison prompt builds.
+        let Some(bytes) = kv::get_bytes_opt(KV_KEY)? else {
+            return Ok(());
+        };
+        let Decoded::Pet(mut pet) = model::decode_stored(&bytes) else {
+            return Ok(());
         };
 
         let cfg = load_config();

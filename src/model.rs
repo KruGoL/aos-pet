@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 /// KV key holding this principal's pet. KV is principal-scoped, so one key
 /// per capsule yields one pet per user with no extra work.
 pub const KV_KEY: &str = "pet";
+/// Where `pet_adopt` parks the raw bytes of an unreadable record before
+/// overwriting it. Corruption must never silently destroy data — the copy
+/// stays inspectable (and hand-recoverable) after the player starts over.
+pub const KV_CORRUPT: &str = "pet.corrupt";
 pub const STATE_VERSION: u32 = 1;
 pub const MAX_ALERTS: usize = 20;
 pub const MAX_NAME: usize = 32;
@@ -83,6 +87,35 @@ pub struct Pet {
     pub grime_ms: u64,
     #[serde(default)]
     pub gloom_ms: u64,
+}
+
+/// Outcome of decoding a stored pet record.
+///
+/// A dedicated type rather than a `Result`, because the two failure shapes
+/// need *handling*, not propagation: bubbling a raw serde error out of every
+/// tool bricks the capsule — even `pet_adopt` loads first, so one bad byte
+/// would leave the player with no working tool and no way to re-adopt.
+#[derive(Debug)]
+pub enum Decoded {
+    /// A readable record at a version this build understands.
+    Pet(Pet),
+    /// Parsed, but written by a newer capsule than this one. Loading anyway
+    /// would apply today's rules to tomorrow's data — undefined semantics.
+    Newer(u32),
+    /// Bytes that no longer parse; carries serde's reason for diagnostics.
+    Corrupt(String),
+}
+
+/// Classify raw KV bytes instead of erasing the distinction between
+/// "unreadable" and "from the future" behind one opaque error. Pure, so the
+/// version gate and corruption path are testable on the host.
+#[must_use]
+pub fn decode_stored(bytes: &[u8]) -> Decoded {
+    match serde_json::from_slice::<Pet>(bytes) {
+        Ok(pet) if pet.version > STATE_VERSION => Decoded::Newer(pet.version),
+        Ok(pet) => Decoded::Pet(pet),
+        Err(e) => Decoded::Corrupt(e.to_string()),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,11 +204,17 @@ impl Pet {
         }
     }
 
-    /// Trim and bound a requested name. Empty input falls back to a default so
-    /// a pet always has something to be called.
+    /// Clean, trim and bound a requested name. Empty input falls back to a
+    /// default so a pet always has something to be called.
+    ///
+    /// Control characters are stripped first: the name flows verbatim into
+    /// agent prompts and terminal output, where an embedded ESC sequence can
+    /// repaint or corrupt any terminal client. Stripping precedes trimming so
+    /// a name like "\n Rex" still trims down to "Rex".
     #[must_use]
     pub fn sanitize_name(raw: &str) -> String {
-        let trimmed = raw.trim();
+        let cleaned: String = raw.chars().filter(|ch| !ch.is_control()).collect();
+        let trimmed = cleaned.trim();
         if trimmed.is_empty() {
             return "Blob".to_string();
         }
@@ -231,6 +270,20 @@ mod tests {
     }
 
     #[test]
+    fn control_characters_never_survive_into_a_name() {
+        // An OSC title-set escape plus a newline — exactly the payload that
+        // would corrupt a terminal client if it reached output verbatim.
+        let name = Pet::sanitize_name("Rex\x1b]0;evil title\x07\nJr");
+        assert!(name.chars().all(|ch| !ch.is_control()), "clean: {name:?}");
+        assert_eq!(name, "Rex]0;evil titleJr");
+
+        // Stripping must happen BEFORE trimming, or "\n Rex" keeps its space.
+        assert_eq!(Pet::sanitize_name("\n Rex \t"), "Rex");
+        // A name that is nothing but control characters is an empty name.
+        assert_eq!(Pet::sanitize_name("\x1b\n\t"), "Blob");
+    }
+
+    #[test]
     fn alerts_are_capped_keeping_newest() {
         let mut p = Pet::new("Rex".into(), 0);
         for i in 0..(MAX_ALERTS as u64 + 5) {
@@ -247,6 +300,30 @@ mod tests {
         p.push_alert(AlertKind::Sick, 99);
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Pet>(&json).unwrap(), p);
+    }
+
+    #[test]
+    fn decode_classifies_readable_newer_and_corrupt_records() {
+        let bytes = serde_json::to_vec(&Pet::new("Rex".into(), 7)).unwrap();
+        match decode_stored(&bytes) {
+            Decoded::Pet(p) => assert_eq!(p.name, "Rex"),
+            other => panic!("a current-version record must load, got {other:?}"),
+        }
+
+        // Garbage bytes must classify as corrupt, never propagate as a raw
+        // serde error — that is what bricked every tool at once.
+        assert!(matches!(decode_stored(b"{not json"), Decoded::Corrupt(_)));
+    }
+
+    #[test]
+    fn a_record_saved_by_a_newer_capsule_is_refused_not_misread() {
+        let mut json = serde_json::to_value(Pet::new("Rex".into(), 0)).unwrap();
+        json["version"] = serde_json::json!(STATE_VERSION + 1);
+        let bytes = serde_json::to_vec(&json).unwrap();
+        match decode_stored(&bytes) {
+            Decoded::Newer(v) => assert_eq!(v, STATE_VERSION + 1),
+            other => panic!("future-version data must be refused, got {other:?}"),
+        }
     }
 
     #[test]
