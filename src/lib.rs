@@ -375,7 +375,13 @@ impl Capsule {
         // Note the clock is deliberately NOT stamped here: a refused meal must
         // leave readiness recharging, or spamming the bowl would pin the next
         // real feed — and with it the Famine cure — at nearly zero value.
-        if economy::is_overserving(pet.fullness) {
+        //
+        // A pet convalescing from Famine is exempt: its bar recovers long before
+        // the illness does, so refusing here would tell the player "feed it
+        // regularly until it recovers" and then refuse every meal — the advice
+        // and the rule contradicting each other with no way out.
+        let convalescing = ailment::active(&pet).contains(&ailment::Ailment::Famine);
+        if economy::is_overserving(pet.fullness) && !convalescing {
             pet.happiness = stat_sub(pet.happiness, economy::OVERSERVE_PENALTY);
             let msg = format!("{} is already full and turns away from the bowl.", pet.name);
             return commit(&pet, now, msg);
@@ -474,8 +480,10 @@ impl Capsule {
         let mut pet = current(now, &cfg)?;
         refuse_if_asleep(&pet)?;
 
-        // As with feeding: a refused wash must not restart the clock.
-        if economy::is_overserving(pet.cleanliness) {
+        // As with feeding: a refused wash must not restart the clock, and a pet
+        // still carrying Grime must never be turned away from the water.
+        let convalescing = ailment::active(&pet).contains(&ailment::Ailment::Grime);
+        if economy::is_overserving(pet.cleanliness) && !convalescing {
             pet.happiness = stat_sub(pet.happiness, economy::OVERSERVE_PENALTY);
             let msg = format!("{} is already spotless and squirms away from the water.", pet.name);
             return commit(&pet, now, msg);
