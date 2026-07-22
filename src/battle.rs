@@ -67,11 +67,13 @@ pub fn stage(age_ms: u64) -> u16 {
 #[must_use]
 pub fn stats_for(pet: &Pet, now_ms: u64) -> Stats {
     let st = stage(pet.age_ms(now_ms));
+    // Stats carry fractions internally; a fight works on whole points, so
+    // round at this boundary exactly as the views do.
     Stats {
         hp: 40 + st * 15,
-        attack: 5 + u16::from(pet.happiness) / 10 + u16::from(pet.energy) / 20,
-        defense: 3 + u16::from(pet.cleanliness) / 12 + if pet.sick { 0 } else { 5 },
-        speed: 4 + u16::from(pet.energy) / 8,
+        attack: 5 + (pet.happiness.round() as u16) / 10 + (pet.energy.round() as u16) / 20,
+        defense: 3 + (pet.cleanliness.round() as u16) / 12 + if pet.sick { 0 } else { 5 },
+        speed: 4 + (pet.energy.round() as u16) / 8,
     }
 }
 
@@ -227,14 +229,14 @@ mod tests {
     #[test]
     fn a_well_kept_pet_outfights_a_neglected_one() {
         let mut good = pet();
-        good.happiness = 100;
-        good.energy = 100;
-        good.cleanliness = 100;
+        good.happiness = 100.0;
+        good.energy = 100.0;
+        good.cleanliness = 100.0;
 
         let mut bad = pet();
-        bad.happiness = 5;
-        bad.energy = 5;
-        bad.cleanliness = 5;
+        bad.happiness = 5.0;
+        bad.energy = 5.0;
+        bad.cleanliness = 5.0;
         bad.sick = true;
 
         let g = stats_for(&good, DAY);
@@ -247,7 +249,7 @@ mod tests {
     #[test]
     fn illness_costs_defence_specifically() {
         let mut p = pet();
-        p.cleanliness = 60;
+        p.cleanliness = 60.0;
         let healthy = stats_for(&p, 0).defense;
         p.sick = true;
         assert!(stats_for(&p, 0).defense < healthy);
@@ -310,9 +312,9 @@ mod tests {
     #[test]
     fn a_strong_pet_usually_beats_the_field() {
         let mut good = pet();
-        good.happiness = 100;
-        good.energy = 100;
-        good.cleanliness = 100;
+        good.happiness = 100.0;
+        good.energy = 100.0;
+        good.cleanliness = 100.0;
         let s = stats_for(&good, 30 * DAY);
 
         let wins = (0..300u32).filter(|seed| fight("Rex", s, *seed).won).count();
@@ -322,9 +324,9 @@ mod tests {
     #[test]
     fn a_neglected_pet_still_sometimes_wins() {
         let mut bad = pet();
-        bad.happiness = 0;
-        bad.energy = 30;
-        bad.cleanliness = 0;
+        bad.happiness = 0.0;
+        bad.energy = 30.0;
+        bad.cleanliness = 0.0;
         bad.sick = true;
         let s = stats_for(&bad, 0);
 

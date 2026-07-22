@@ -159,12 +159,14 @@ pub struct GameView {
 
 // ------------------------------------------------------------------ helpers
 
-fn stat_add(stat: u8, delta: u8) -> u8 {
-    stat.saturating_add(delta).min(100)
+// Stats are f64 internally; gains and costs stay integer constants and are
+// converted at the point of use.
+fn stat_add(stat: f64, delta: u8) -> f64 {
+    (stat + f64::from(delta)).clamp(0.0, 100.0)
 }
 
-fn stat_sub(stat: u8, delta: u8) -> u8 {
-    stat.saturating_sub(delta)
+fn stat_sub(stat: f64, delta: u8) -> f64 {
+    (stat - f64::from(delta)).clamp(0.0, 100.0)
 }
 
 fn load_config() -> Config {
@@ -265,10 +267,11 @@ fn view(pet: &Pet, now: u64, message: impl Into<String>) -> PetView {
     PetView {
         name: pet.name.clone(),
         mood: render::mood_name(pet).to_string(),
-        fullness: pet.fullness,
-        happiness: pet.happiness,
-        energy: pet.energy,
-        cleanliness: pet.cleanliness,
+        // The outside world sees whole points; fractions stay internal.
+        fullness: render::pt(pet.fullness),
+        happiness: render::pt(pet.happiness),
+        energy: render::pt(pet.energy),
+        cleanliness: render::pt(pet.cleanliness),
         sleeping: pet.sleeping,
         sick: pet.sick,
         ailments: ailment::active(pet)
@@ -307,12 +310,14 @@ fn note_recovery(pet: &mut Pet, was_ill: bool, now: u64) {
     }
 }
 
-/// True when nothing a player could notice has changed.
+/// True when nothing a player could notice has changed. Stats are compared at
+/// player-visible (rounded) resolution: the raw f64s drift on every 5 s tick,
+/// so comparing them directly would make every tick look like a change.
 fn stats_unchanged(a: &Pet, b: &Pet) -> bool {
-    a.fullness == b.fullness
-        && a.happiness == b.happiness
-        && a.energy == b.energy
-        && a.cleanliness == b.cleanliness
+    render::pt(a.fullness) == render::pt(b.fullness)
+        && render::pt(a.happiness) == render::pt(b.happiness)
+        && render::pt(a.energy) == render::pt(b.energy)
+        && render::pt(a.cleanliness) == render::pt(b.cleanliness)
         && a.sick == b.sick
 }
 
@@ -400,7 +405,7 @@ impl Capsule {
         let msg = format!(
             "{} munches happily. Fullness is now {}.{}",
             pet.name,
-            pet.fullness,
+            render::pt(pet.fullness),
             economy::payoff_note(ready)
         );
         commit(&pet, now, msg)
@@ -426,7 +431,7 @@ impl Capsule {
                 a.remedy()
             )));
         }
-        if pet.energy < PLAY_ENERGY_COST {
+        if pet.energy < f64::from(PLAY_ENERGY_COST) {
             let msg = format!("{} is too tired to play — it needs rest.", pet.name);
             return commit(&pet, now, msg);
         }
@@ -491,7 +496,7 @@ impl Capsule {
 
         let was_ill = pet.sick;
         let ready = economy::readiness(pet.last_cleaned_ms, now, cfg.clean_ideal_hours, cfg.scale);
-        pet.cleanliness = 100;
+        pet.cleanliness = 100.0;
         pet.happiness = stat_add(pet.happiness, economy::payoff(CLEAN_JOY, ready));
         pet.last_cleaned_ms = now;
         ailment::apply_remedy(&mut pet, ailment::Ailment::Grime, ready);
@@ -614,7 +619,7 @@ impl Capsule {
                 a.remedy()
             )));
         }
-        if pet.energy < game::ENERGY_COST {
+        if pet.energy < f64::from(game::ENERGY_COST) {
             save(&pet)?;
             let msg = format!("{} is too tired to play — it needs rest.", pet.name);
             return Ok(game_view(&pet, now, msg, false, 0, 0));
@@ -721,7 +726,7 @@ impl Capsule {
                 a.remedy()
             )));
         }
-        if pet.energy < battle::MIN_ENERGY {
+        if pet.energy < f64::from(battle::MIN_ENERGY) {
             return Err(SysError::ApiError(format!(
                 "{} is too tired to fight — it needs rest first.",
                 pet.name
@@ -866,10 +871,10 @@ mod tests {
 
     #[test]
     fn stat_helpers_saturate_at_both_ends() {
-        assert_eq!(stat_add(90, 30), 100);
-        assert_eq!(stat_add(250, 30), 100);
-        assert_eq!(stat_sub(10, 30), 0);
-        assert_eq!(stat_sub(40, 15), 25);
+        assert_eq!(stat_add(90.0, 30), 100.0);
+        assert_eq!(stat_add(250.0, 30), 100.0);
+        assert_eq!(stat_sub(10.0, 30), 0.0);
+        assert_eq!(stat_sub(40.0, 15), 25.0);
     }
 
     #[test]
@@ -881,11 +886,17 @@ mod tests {
         only_clock.last_seen_ms = 999_999;
         assert!(stats_unchanged(&a, &only_clock));
 
+        // Sub-point drift is invisible to the player and must not count,
+        // or continuous decay would make every 5 s tick look like a change.
+        let mut fractional = a.clone();
+        fractional.fullness -= 0.2;
+        assert!(stats_unchanged(&a, &fractional));
+
         for mutate in [
-            (|p: &mut Pet| p.fullness -= 1) as fn(&mut Pet),
-            |p: &mut Pet| p.happiness -= 1,
-            |p: &mut Pet| p.energy -= 1,
-            |p: &mut Pet| p.cleanliness -= 1,
+            (|p: &mut Pet| p.fullness -= 1.0) as fn(&mut Pet),
+            |p: &mut Pet| p.happiness -= 1.0,
+            |p: &mut Pet| p.energy -= 1.0,
+            |p: &mut Pet| p.cleanliness -= 1.0,
             |p: &mut Pet| p.sick = true,
         ] {
             let mut b = a.clone();

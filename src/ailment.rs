@@ -85,15 +85,16 @@ pub fn accrue(pet: &mut Pet, elapsed_ms: u64, cfg: &Config) {
     // recoverable range on its very next tick rather than staying doomed.
     let cap = hours_to_ms(MAX_DEPTH_H);
 
-    if pet.fullness == 0 {
+    // `drop_stat` clamps a bottomed stat to exactly 0.0, so `<= 0.0` is exact.
+    if pet.fullness <= 0.0 {
         pet.famine_ms = pet.famine_ms.saturating_add(scaled).min(cap);
     }
-    if pet.cleanliness == 0 {
+    if pet.cleanliness <= 0.0 {
         pet.grime_ms = pet.grime_ms.saturating_add(scaled).min(cap);
     }
     // Gloom is about a sustained low mood rather than an empty bar — you can be
     // fed and clean and still be miserable.
-    if pet.happiness < LOW {
+    if pet.happiness < f64::from(LOW) {
         pet.gloom_ms = pet.gloom_ms.saturating_add(scaled).min(cap);
     } else {
         // Cheer it up at all and the clock starts unwinding on its own.
@@ -176,7 +177,7 @@ mod tests {
 
     fn pet() -> Pet {
         let mut p = Pet::new("Rex".into(), 0);
-        p.happiness = 80; // above LOW, so gloom does not accrue by accident
+        p.happiness = 80.0; // above LOW, so gloom does not accrue by accident
         p
     }
 
@@ -184,7 +185,7 @@ mod tests {
     fn starving_earns_famine_and_nothing_else() {
         let cfg = Config::default();
         let mut p = pet();
-        p.fullness = 0;
+        p.fullness = 0.0;
         accrue(&mut p, 7 * HOUR, &cfg);
         assert_eq!(active(&p), vec![Ailment::Famine]);
     }
@@ -193,7 +194,7 @@ mod tests {
     fn filth_earns_grime() {
         let cfg = Config::default();
         let mut p = pet();
-        p.cleanliness = 0;
+        p.cleanliness = 0.0;
         accrue(&mut p, 7 * HOUR, &cfg);
         assert_eq!(active(&p), vec![Ailment::Grime]);
     }
@@ -202,9 +203,9 @@ mod tests {
     fn a_low_mood_earns_gloom_even_with_every_other_need_met() {
         let cfg = Config::default();
         let mut p = pet();
-        p.fullness = 100;
-        p.cleanliness = 100;
-        p.happiness = LOW - 1;
+        p.fullness = 100.0;
+        p.cleanliness = 100.0;
+        p.happiness = f64::from(LOW) - 1.0;
         accrue(&mut p, 7 * HOUR, &cfg);
         assert_eq!(active(&p), vec![Ailment::Gloom]);
     }
@@ -213,9 +214,9 @@ mod tests {
     fn ailments_stack_when_everything_was_neglected() {
         let cfg = Config::default();
         let mut p = pet();
-        p.fullness = 0;
-        p.cleanliness = 0;
-        p.happiness = 0;
+        p.fullness = 0.0;
+        p.cleanliness = 0.0;
+        p.happiness = 0.0;
         accrue(&mut p, 7 * HOUR, &cfg);
         assert_eq!(active(&p).len(), 3, "a truly abandoned pet is not just 'sick'");
     }
@@ -224,7 +225,7 @@ mod tests {
     fn nothing_sets_in_below_the_onset_threshold() {
         let cfg = Config::default();
         let mut p = pet();
-        p.fullness = 0;
+        p.fullness = 0.0;
         accrue(&mut p, 5 * HOUR, &cfg);
         assert!(active(&p).is_empty(), "one missed meal is not an illness");
     }
@@ -233,7 +234,7 @@ mod tests {
     fn the_right_remedy_cures_and_the_wrong_one_does_nothing() {
         let cfg = Config::default();
         let mut p = pet();
-        p.fullness = 0;
+        p.fullness = 0.0;
         accrue(&mut p, 8 * HOUR, &cfg);
         assert!(active(&p).contains(&Ailment::Famine));
 
@@ -251,7 +252,7 @@ mod tests {
         // would undo days of neglect and the ailment system would be theatre.
         let cfg = Config::default();
         let mut spammed = pet();
-        spammed.fullness = 0;
+        spammed.fullness = 0.0;
         accrue(&mut spammed, 20 * HOUR, &cfg);
         let mut patient = spammed.clone();
 
@@ -271,7 +272,7 @@ mod tests {
     fn medicine_helps_but_never_cures_alone() {
         let cfg = Config::default();
         let mut p = pet();
-        p.fullness = 0;
+        p.fullness = 0.0;
         accrue(&mut p, 9 * HOUR, &cfg);
         let before = p.famine_ms;
 
@@ -287,7 +288,7 @@ mod tests {
     fn medicine_cannot_touch_gloom() {
         let cfg = Config::default();
         let mut p = pet();
-        p.happiness = 0;
+        p.happiness = 0.0;
         accrue(&mut p, 9 * HOUR, &cfg);
         let before = p.gloom_ms;
         apply_medicine(&mut p, 1.0);
@@ -298,11 +299,11 @@ mod tests {
     fn cheering_the_pet_up_unwinds_gloom_by_itself() {
         let cfg = Config::default();
         let mut p = pet();
-        p.happiness = 0;
+        p.happiness = 0.0;
         accrue(&mut p, 9 * HOUR, &cfg);
         assert!(active(&p).contains(&Ailment::Gloom));
 
-        p.happiness = 90;
+        p.happiness = 90.0;
         accrue(&mut p, 9 * HOUR, &cfg);
         assert!(!active(&p).contains(&Ailment::Gloom), "kept company, it lifts");
     }
@@ -311,7 +312,7 @@ mod tests {
     fn a_year_of_neglect_costs_one_addition_not_a_loop() {
         let cfg = Config::default();
         let mut p = pet();
-        p.fullness = 0;
+        p.fullness = 0.0;
         accrue(&mut p, 365 * 24 * HOUR, &cfg);
         assert!(active(&p).contains(&Ailment::Famine));
         assert!(p.famine_ms > 0, "and it saturates rather than overflowing");
@@ -324,7 +325,7 @@ mod tests {
         // which is a death sentence wearing a recovery costume.
         let cfg = Config::default();
         let mut p = pet();
-        p.fullness = 0;
+        p.fullness = 0.0;
         accrue(&mut p, 365 * 24 * HOUR, &cfg);
 
         let mut remedies = 0;
@@ -345,8 +346,8 @@ mod tests {
         let mut p = pet();
         // Full bars on purpose: the doomed pet observed live had fullness 100,
         // so the accrual branches never ran and an in-branch clamp missed it.
-        p.fullness = 100;
-        p.cleanliness = 100;
+        p.fullness = 100.0;
+        p.cleanliness = 100.0;
         p.famine_ms = 743 * HOUR; // an actual value observed in a live pet
         p.grime_ms = 743 * HOUR;
         accrue(&mut p, 1000, &cfg);
@@ -362,7 +363,7 @@ mod tests {
     fn compressed_time_makes_illness_arrive_sooner_in_real_seconds() {
         let fast = Config::default().with_scale_str("2000");
         let mut p = pet();
-        p.fullness = 0;
+        p.fullness = 0.0;
         accrue(&mut p, 20_000, &fast); // 20 real seconds
         assert!(active(&p).contains(&Ailment::Famine), "demos must be possible");
     }
@@ -373,7 +374,7 @@ mod tests {
         // of neglect at once, which made every other cure pointless.
         let cfg = Config::default();
         let mut p = pet();
-        p.fullness = 0;
+        p.fullness = 0.0;
         accrue(&mut p, 20 * HOUR, &cfg);
         let before = p.famine_ms;
 
@@ -393,7 +394,7 @@ mod tests {
         // on a blanket illness check the pet could never be cheered up again.
         let cfg = Config::default();
         let mut p = pet();
-        p.happiness = 0;
+        p.happiness = 0.0;
         accrue(&mut p, 9 * HOUR, &cfg);
         assert!(is_ill(&p), "it is genuinely unwell");
         assert_eq!(blocks_play(&p), None, "and yet play must stay available");
@@ -403,7 +404,7 @@ mod tests {
     fn a_physically_ill_pet_is_too_weak_to_play() {
         let cfg = Config::default();
         let mut p = pet();
-        p.fullness = 0;
+        p.fullness = 0.0;
         accrue(&mut p, 9 * HOUR, &cfg);
         assert_eq!(blocks_play(&p), Some(Ailment::Famine));
     }

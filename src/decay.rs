@@ -11,23 +11,25 @@
 use crate::config::{Config, LOW, MS_PER_HOUR};
 use crate::model::{AlertKind, Pet};
 
-fn drop_stat(stat: u8, per_hour: f64, hours: f64) -> u8 {
+// No rounding here, ever: the watchdog invokes `advance` every 5 seconds, and
+// at real-time scale a 5 s span decays a stat by ~0.01 points. Rounding that
+// back onto an integer while `last_seen_ms` still advanced meant the pet never
+// decayed at all. Fractions are kept; only the boundary (views, bars) rounds.
+fn drop_stat(stat: f64, per_hour: f64, hours: f64) -> f64 {
     let delta = per_hour * hours;
     if !delta.is_finite() || delta <= 0.0 {
         return stat;
     }
-    // Saturate through f64 first: a very long absence must clamp to 0, not wrap.
-    let next = f64::from(stat) - delta;
-    if next <= 0.0 { 0 } else { next.round() as u8 }
+    // Clamp: a very long absence must bottom out at 0, not go negative.
+    (stat - delta).clamp(0.0, 100.0)
 }
 
-fn raise_stat(stat: u8, per_hour: f64, hours: f64) -> u8 {
+fn raise_stat(stat: f64, per_hour: f64, hours: f64) -> f64 {
     let delta = per_hour * hours;
     if !delta.is_finite() || delta <= 0.0 {
         return stat;
     }
-    let next = f64::from(stat) + delta;
-    if next >= 100.0 { 100 } else { next.round() as u8 }
+    (stat + delta).clamp(0.0, 100.0)
 }
 
 /// Advance the pet to `now_ms`, returning any thresholds newly crossed
@@ -84,17 +86,18 @@ pub fn advance(pet: &mut Pet, now_ms: u64, cfg: &Config) -> Vec<AlertKind> {
 
     pet.last_seen_ms = now_ms;
 
+    let low = f64::from(LOW);
     let mut crossed = Vec::new();
-    if was.0 >= LOW && pet.fullness < LOW {
+    if was.0 >= low && pet.fullness < low {
         crossed.push(AlertKind::Hungry);
     }
-    if was.1 >= LOW && pet.happiness < LOW {
+    if was.1 >= low && pet.happiness < low {
         crossed.push(AlertKind::Sad);
     }
-    if was.2 >= LOW && pet.energy < LOW {
+    if was.2 >= low && pet.energy < low {
         crossed.push(AlertKind::Tired);
     }
-    if was.3 >= LOW && pet.cleanliness < LOW {
+    if was.3 >= low && pet.cleanliness < low {
         crossed.push(AlertKind::Dirty);
     }
     if !was.4 && pet.sick {
@@ -135,8 +138,8 @@ mod tests {
         let cfg = Config::default();
         let mut p = pet_at(0);
         advance(&mut p, 5 * HOUR, &cfg);
-        assert_eq!(p.fullness, 80 - (8.0 * 5.0) as u8);
-        assert_eq!(p.energy, 80 - (5.0 * 5.0) as u8);
+        assert_eq!(p.fullness, 80.0 - 8.0 * 5.0);
+        assert_eq!(p.energy, 80.0 - 5.0 * 5.0);
         assert_eq!(p.last_seen_ms, 5 * HOUR);
     }
 
@@ -145,10 +148,10 @@ mod tests {
         let cfg = Config::default();
         let mut p = pet_at(0);
         advance(&mut p, 10_000 * HOUR, &cfg);
-        assert_eq!(p.fullness, 0);
-        assert_eq!(p.happiness, 0);
-        assert_eq!(p.energy, 0);
-        assert_eq!(p.cleanliness, 0);
+        assert_eq!(p.fullness, 0.0);
+        assert_eq!(p.happiness, 0.0);
+        assert_eq!(p.energy, 0.0);
+        assert_eq!(p.cleanliness, 0.0);
     }
 
     #[test]
@@ -157,14 +160,14 @@ mod tests {
         let mut awake = pet_at(0);
         let mut asleep = pet_at(0);
         asleep.sleeping = true;
-        asleep.energy = 20;
-        awake.energy = 20;
+        asleep.energy = 20.0;
+        awake.energy = 20.0;
 
         advance(&mut awake, 2 * HOUR, &cfg);
         advance(&mut asleep, 2 * HOUR, &cfg);
 
         assert!(asleep.energy > awake.energy, "sleep must restore energy");
-        assert!(asleep.energy > 20, "energy should rise while asleep");
+        assert!(asleep.energy > 20.0, "energy should rise while asleep");
         assert!(
             asleep.fullness > awake.fullness,
             "other stats decay slower while asleep"
@@ -196,7 +199,7 @@ mod tests {
         let mut p = pet_at(10 * HOUR);
         let alerts = advance(&mut p, 1 * HOUR, &cfg);
         assert!(alerts.is_empty());
-        assert_eq!(p.fullness, 80, "no decay should be applied backwards");
+        assert_eq!(p.fullness, 80.0, "no decay should be applied backwards");
         assert_eq!(p.last_seen_ms, 1 * HOUR);
     }
 
@@ -218,7 +221,7 @@ mod tests {
         let mut p = pet_at(0);
         // Long enough to bottom out fullness and then sit there.
         let alerts = advance(&mut p, 30 * HOUR, &cfg);
-        assert_eq!(p.fullness, 0);
+        assert_eq!(p.fullness, 0.0);
         assert!(p.sick, "prolonged starvation must cause illness");
         assert!(alerts.contains(&AlertKind::Sick));
 
@@ -237,8 +240,8 @@ mod tests {
         let accrued = p.famine_ms;
         assert!(accrued > 0);
 
-        p.fullness = 100;
-        p.cleanliness = 100;
+        p.fullness = 100.0;
+        p.cleanliness = 100.0;
         advance(&mut p, 16 * HOUR, &cfg);
         assert_eq!(p.famine_ms, accrued, "a full bar stops the clock, no more");
     }
@@ -250,17 +253,17 @@ mod tests {
         // every relapse and never once about getting better.
         let cfg = Config::default();
         let mut p = pet_at(0);
-        p.fullness = 100;
-        p.cleanliness = 100;
-        p.happiness = 0;
+        p.fullness = 100.0;
+        p.cleanliness = 100.0;
+        p.happiness = 0.0;
         let fell = advance(&mut p, 10 * HOUR, &cfg);
         assert!(fell.contains(&AlertKind::Sick), "got {fell:?}");
 
         // Cheer it up — and keep the other needs met, or the pet simply trades
         // gloom for famine and stays ill for an unrelated reason.
-        p.happiness = 100;
-        p.fullness = 100;
-        p.cleanliness = 100;
+        p.happiness = 100.0;
+        p.fullness = 100.0;
+        p.cleanliness = 100.0;
         let rose = advance(&mut p, 20 * HOUR, &cfg);
         assert!(!p.sick, "gloom should have lifted, got {:?}", crate::ailment::active(&p));
         assert!(rose.contains(&AlertKind::Recovered), "got {rose:?}");
@@ -271,7 +274,36 @@ mod tests {
         let fast = Config::default().with_scale_str("60");
         let mut p = pet_at(0);
         advance(&mut p, 60_000, &fast); // one minute at 60x == one hour
-        assert_eq!(p.fullness, 80 - 8);
+        // (1/60)*60 is not exactly 1.0 in binary, so allow a hair of slack.
+        assert!((p.fullness - 72.0).abs() < 1e-9, "got {}", p.fullness);
+    }
+
+    #[test]
+    fn five_second_polling_decays_exactly_like_one_big_step() {
+        // The watchdog invokes the capsule every 5 seconds. With integer stats
+        // each 5 s span decayed a fraction of a point, rounded back to the same
+        // integer — while `last_seen_ms` still advanced — so at real-time scale
+        // the pet never decayed at all. This loop is TEST-ONLY: production stays
+        // single-shot; it exists to prove many tiny spans sum like one big one.
+        let cfg = Config::default();
+        let mut polled = pet_at(0);
+        for i in 1..=720u64 {
+            advance(&mut polled, i * 5_000, &cfg); // 720 x 5 s = 1 hour
+        }
+        let mut single = pet_at(0);
+        advance(&mut single, 3_600_000, &cfg);
+
+        assert!(
+            (single.fullness - 72.0).abs() < 1e-9,
+            "one hour must cost 8 fullness, got {}",
+            single.fullness
+        );
+        assert!(
+            (polled.fullness - single.fullness).abs() < 0.5,
+            "polling decayed to {} but a single step to {}",
+            polled.fullness,
+            single.fullness
+        );
     }
 
     #[test]

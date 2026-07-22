@@ -26,12 +26,13 @@ pub const AMUSE_GAP_H: f64 = 1.0;
 /// An event worth telling the player about, with its own wording.
 pub type Event = (AlertKind, String);
 
-fn add(v: u8, d: u8) -> u8 {
-    v.saturating_add(d).min(100)
+// Stats are f64; gains and costs stay integer constants, converted at the call.
+fn add(v: f64, d: u8) -> f64 {
+    (v + f64::from(d)).clamp(0.0, 100.0)
 }
 
-fn sub(v: u8, d: u8) -> u8 {
-    v.saturating_sub(d)
+fn sub(v: f64, d: u8) -> f64 {
+    (v - f64::from(d)).clamp(0.0, 100.0)
 }
 
 fn schedule_next(pet: &mut Pet, now: u64, cfg: &Config, seed: u32) {
@@ -75,10 +76,10 @@ pub fn update(pet: &mut Pet, now: u64, cfg: &Config, fresh_seed: u32) -> Vec<Eve
     }
 
     // 3. Look after itself.
-    if !pet.sleeping && pet.energy <= SLEEP_AT {
+    if !pet.sleeping && pet.energy <= f64::from(SLEEP_AT) {
         pet.sleeping = true;
         events.push((AlertKind::DozedOff, AlertKind::DozedOff.message(&pet.name)));
-    } else if pet.sleeping && pet.energy >= WAKE_AT {
+    } else if pet.sleeping && pet.energy >= f64::from(WAKE_AT) {
         pet.sleeping = false;
         events.push((AlertKind::WokeUp, AlertKind::WokeUp.message(&pet.name)));
     }
@@ -87,8 +88,8 @@ pub fn update(pet: &mut Pet, now: u64, cfg: &Config, fresh_seed: u32) -> Vec<Eve
     //    a moment already *is* the pet doing something.
     if !pet.sleeping
         && pet.moment.is_none()
-        && pet.energy >= AMUSE_ENERGY
-        && pet.happiness < AMUSE_BOREDOM
+        && pet.energy >= f64::from(AMUSE_ENERGY)
+        && pet.happiness < f64::from(AMUSE_BOREDOM)
     {
         let gap_h = (now.saturating_sub(pet.last_amused_ms) as f64 / MS_PER_HOUR) * cfg.scale;
         if pet.last_amused_ms == 0 || gap_h >= AMUSE_GAP_H {
@@ -183,7 +184,7 @@ mod tests {
     fn an_exhausted_pet_puts_itself_to_bed() {
         let cfg = Config::default();
         let mut p = pet();
-        p.energy = 0;
+        p.energy = 0.0;
         let events = update(&mut p, HOUR, &cfg, 1);
         assert!(p.sleeping, "it should not wait to be told");
         assert!(events.iter().any(|(k, _)| *k == AlertKind::DozedOff));
@@ -194,7 +195,7 @@ mod tests {
         let cfg = Config::default();
         let mut p = pet();
         p.sleeping = true;
-        p.energy = 95;
+        p.energy = 95.0;
         let events = update(&mut p, HOUR, &cfg, 1);
         assert!(!p.sleeping, "otherwise it would sleep forever");
         assert!(events.iter().any(|(k, _)| *k == AlertKind::WokeUp));
@@ -204,12 +205,12 @@ mod tests {
     fn a_bored_energetic_pet_entertains_itself() {
         let cfg = Config::default();
         let mut p = pet();
-        p.energy = 90;
-        p.happiness = 20;
+        p.energy = 90.0;
+        p.happiness = 20.0;
         let before = p.happiness;
         let events = update(&mut p, HOUR, &cfg, 1);
         assert!(p.happiness > before, "it found something to do");
-        assert!(p.energy < 90, "and it cost energy");
+        assert!(p.energy < 90.0, "and it cost energy");
         assert!(events.iter().any(|(k, _)| *k == AlertKind::AmusedItself));
     }
 
@@ -217,8 +218,8 @@ mod tests {
     fn self_amusement_cannot_be_farmed_by_the_tick() {
         let cfg = Config::default();
         let mut p = pet();
-        p.energy = 100;
-        p.happiness = 10;
+        p.energy = 100.0;
+        p.happiness = 10.0;
         let mut bouts = 0;
         for t in 1..200u64 {
             let events = update(&mut p, t * 5_000, &cfg, t as u32);
@@ -234,8 +235,8 @@ mod tests {
     fn a_contented_pet_does_not_need_to_amuse_itself() {
         let cfg = Config::default();
         let mut p = pet();
-        p.energy = 90;
-        p.happiness = 90;
+        p.energy = 90.0;
+        p.happiness = 90.0;
         let events = update(&mut p, HOUR, &cfg, 1);
         assert!(!events.iter().any(|(k, _)| *k == AlertKind::AmusedItself));
     }

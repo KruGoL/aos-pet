@@ -9,23 +9,26 @@ pub const STATE_VERSION: u32 = 1;
 pub const MAX_ALERTS: usize = 20;
 pub const MAX_NAME: usize = 32;
 /// Stats a freshly adopted pet starts with.
-pub const START_STAT: u8 = 80;
+pub const START_STAT: f64 = 80.0;
 
 fn default_version() -> u32 {
     STATE_VERSION
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// Stats are f64 so sub-point decay accumulates honestly: the 5 s watchdog tick
+// spans decay fractions of a point, and integer stats rounded them all away.
+// No `Eq` — f64 is only `PartialEq`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Pet {
     #[serde(default = "default_version")]
     pub version: u32,
     pub name: String,
     pub born_at_ms: u64,
     pub last_seen_ms: u64,
-    pub fullness: u8,
-    pub happiness: u8,
-    pub energy: u8,
-    pub cleanliness: u8,
+    pub fullness: f64,
+    pub happiness: f64,
+    pub energy: f64,
+    pub cleanliness: f64,
     #[serde(default)]
     pub sleeping: bool,
     #[serde(default)]

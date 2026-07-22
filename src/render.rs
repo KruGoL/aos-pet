@@ -7,6 +7,14 @@ use crate::mood::{mood_of, Mood};
 
 pub const BAR_WIDTH: usize = 12;
 
+/// Round a fractional stat for the outside world. Stats carry fractions
+/// internally so slow decay accumulates; players only ever see whole points —
+/// "80.00000001" must never reach a screen.
+#[must_use]
+pub fn pt(v: f64) -> u8 {
+    v.round().clamp(0.0, 100.0) as u8
+}
+
 /// A 0..=100 stat as a fixed-width bar.
 #[must_use]
 pub fn bar(value: u8, width: usize) -> String {
@@ -53,10 +61,10 @@ pub fn display(pet: &Pet, frame: usize, now_ms: u64) -> String {
     if let Some(label) = pet.moment.as_ref().and_then(crate::moment::Active::def) {
         out.push_str(&format!("  * {} {}\n", pet.name, label.label));
     }
-    out.push_str(&stat_line("Fullness", pet.fullness));
-    out.push_str(&stat_line("Happiness", pet.happiness));
-    out.push_str(&stat_line("Energy", pet.energy));
-    out.push_str(&stat_line("Cleanliness", pet.cleanliness));
+    out.push_str(&stat_line("Fullness", pt(pet.fullness)));
+    out.push_str(&stat_line("Happiness", pt(pet.happiness)));
+    out.push_str(&stat_line("Energy", pt(pet.energy)));
+    out.push_str(&stat_line("Cleanliness", pt(pet.cleanliness)));
     // Name the ailment and its remedy: "sick" alone tells the player nothing
     // about what to actually do.
     for a in crate::ailment::active(pet) {
@@ -89,17 +97,19 @@ pub fn mood_name(pet: &Pet) -> &'static str {
 /// it reports severity, and each client maps that onto its own palette.
 #[must_use]
 pub fn level(pet: &Pet) -> &'static str {
-    let bottomed = pet.fullness == 0
-        || pet.happiness == 0
-        || pet.energy == 0
-        || pet.cleanliness == 0;
+    // `drop_stat` clamps a bottomed stat to exactly 0.0, so `<= 0.0` is exact.
+    let bottomed = pet.fullness <= 0.0
+        || pet.happiness <= 0.0
+        || pet.energy <= 0.0
+        || pet.cleanliness <= 0.0;
     if pet.sick || bottomed {
         return "critical";
     }
     if pet.sleeping {
         return "resting";
     }
-    if pet.fullness < LOW || pet.happiness < LOW || pet.energy < LOW || pet.cleanliness < LOW {
+    let low = f64::from(LOW);
+    if pet.fullness < low || pet.happiness < low || pet.energy < low || pet.cleanliness < low {
         return "warn";
     }
     "ok"
@@ -124,7 +134,12 @@ pub fn compact(pet: &Pet) -> String {
     };
     let mut s = format!(
         "{} ({}) f{} h{} e{} c{}",
-        pet.name, face, pet.fullness, pet.happiness, pet.energy, pet.cleanliness
+        pet.name,
+        face,
+        pt(pet.fullness),
+        pt(pet.happiness),
+        pt(pet.energy),
+        pt(pet.cleanliness)
     );
     if pet.sick {
         s.push_str(" [SICK]");
@@ -144,10 +159,10 @@ pub fn prompt_section(pet: &Pet) -> String {
          Fullness {}/100, happiness {}/100, energy {}/100, cleanliness {}/100.",
         pet.name,
         mood_name(pet),
-        pet.fullness,
-        pet.happiness,
-        pet.energy,
-        pet.cleanliness
+        pt(pet.fullness),
+        pt(pet.happiness),
+        pt(pet.energy),
+        pt(pet.cleanliness)
     );
     for a in crate::ailment::active(pet) {
         s.push_str(&format!(" It is {} — {}.", a.label(), a.remedy()));
@@ -231,26 +246,36 @@ mod tests {
     #[test]
     fn level_escalates_with_the_pets_condition() {
         let mut p = Pet::new("Rex".into(), 0);
-        p.fullness = 100;
-        p.happiness = 100;
-        p.energy = 100;
-        p.cleanliness = 100;
+        p.fullness = 100.0;
+        p.happiness = 100.0;
+        p.energy = 100.0;
+        p.cleanliness = 100.0;
         assert_eq!(level(&p), "ok");
 
-        p.happiness = LOW - 1;
+        p.happiness = f64::from(LOW) - 1.0;
         assert_eq!(level(&p), "warn", "a low stat is a warning");
 
-        p.happiness = 0;
+        p.happiness = 0.0;
         assert_eq!(level(&p), "critical", "a bottomed stat is critical");
+    }
+
+    #[test]
+    fn pt_rounds_for_display_and_clamps_the_impossible() {
+        assert_eq!(pt(80.0), 80);
+        assert_eq!(pt(79.99), 80);
+        assert_eq!(pt(80.49), 80);
+        assert_eq!(pt(0.2), 0);
+        assert_eq!(pt(-3.0), 0);
+        assert_eq!(pt(250.0), 100);
     }
 
     #[test]
     fn illness_is_always_critical_even_with_perfect_stats() {
         let mut p = Pet::new("Rex".into(), 0);
-        p.fullness = 100;
-        p.happiness = 100;
-        p.energy = 100;
-        p.cleanliness = 100;
+        p.fullness = 100.0;
+        p.happiness = 100.0;
+        p.energy = 100.0;
+        p.cleanliness = 100.0;
         p.sick = true;
         assert_eq!(level(&p), "critical");
     }
@@ -262,7 +287,7 @@ mod tests {
         assert_eq!(level(&p), "resting");
 
         // Asleep is no excuse for starving.
-        p.fullness = 0;
+        p.fullness = 0.0;
         assert_eq!(level(&p), "critical");
     }
 
@@ -284,19 +309,19 @@ mod tests {
     #[test]
     fn compact_face_tracks_the_mood() {
         let mut p = Pet::new("Rex".into(), 0);
-        p.fullness = 80;
-        p.happiness = 80;
-        p.energy = 80;
-        p.cleanliness = 80;
+        p.fullness = 80.0;
+        p.happiness = 80.0;
+        p.energy = 80.0;
+        p.cleanliness = 80.0;
         assert!(compact(&p).contains("^.^"), "thriving pet should smile");
 
-        p.fullness = 100;
-        p.happiness = 100;
-        p.energy = 100;
-        p.cleanliness = 100;
+        p.fullness = 100.0;
+        p.happiness = 100.0;
+        p.energy = 100.0;
+        p.cleanliness = 100.0;
         assert!(compact(&p).contains("^o^"), "a radiant pet beams");
 
-        p.fullness = 5;
+        p.fullness = 5.0;
         assert!(compact(&p).contains("O.O"), "hungry pet should look alarmed");
     }
 
@@ -331,3 +356,4 @@ mod tests {
         assert_ne!(f[0], f[1]);
     }
 }
+

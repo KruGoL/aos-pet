@@ -66,8 +66,8 @@ pub fn payoff_note(readiness: f64) -> &'static str {
 
 /// True when serving this need again is fussing rather than care.
 #[must_use]
-pub fn is_overserving(current: u8) -> bool {
-    current >= SATED
+pub fn is_overserving(current: f64) -> bool {
+    current >= f64::from(SATED)
 }
 
 #[cfg(test)]
@@ -134,8 +134,9 @@ mod tests {
 
     #[test]
     fn overserving_starts_at_the_sated_mark() {
-        assert!(!is_overserving(SATED - 1));
-        assert!(is_overserving(SATED));
-        assert!(is_overserving(100));
+        assert!(!is_overserving(f64::from(SATED) - 1.0));
+        assert!(!is_overserving(f64::from(SATED) - 0.001));
+        assert!(is_overserving(f64::from(SATED)));
+        assert!(is_overserving(100.0));
     }
 }
