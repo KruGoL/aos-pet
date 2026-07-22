@@ -30,6 +30,49 @@ import time
 AOS = os.path.expanduser("~/.aos/bin/aos")
 HOME = os.path.expanduser("~")
 LINE_CACHE = os.path.join(HOME, ".pet-line")
+# Four-line layout for a tall tmux status bar; line N feeds status-format[N+1].
+LINES_CACHE = os.path.join(HOME, ".pet-lines")
+STATUS_LINES = 4
+
+
+def bar(value, width=10):
+    filled = min(width, (int(value) * width + 50) // 100)
+    return "#" * filled + "-" * (width - filled)
+
+
+def build_lines(data, frame):
+    """Compose the tall layout: art on the left, bars on the right.
+
+    Built client-side from the structured fields rather than the capsule's
+    `display`, because a status bar needs a fixed height and its own shape.
+    """
+    frames = data.get("frames") or []
+    art = ["", "", ""]
+    if frames:
+        picked = frames[frame % len(frames)].split("\n")
+        art = (picked + ["", "", ""])[:3]
+
+    name = data.get("name", "pet")
+    mood = data.get("mood", "")
+    age_h = int(data.get("age_hours") or 0)
+    age = f"{age_h // 24}d" if age_h >= 24 else f"{age_h}h"
+
+    right = [
+        f"{name} · {mood} · {age}",
+        f"f [{bar(data.get('fullness', 0))}] {data.get('fullness', 0):>3}"
+        f"   h [{bar(data.get('happiness', 0))}] {data.get('happiness', 0):>3}",
+        f"e [{bar(data.get('energy', 0))}] {data.get('energy', 0):>3}"
+        f"   c [{bar(data.get('cleanliness', 0))}] {data.get('cleanliness', 0):>3}",
+    ]
+    lines = [f"{art[i]:<16} {right[i]}" for i in range(3)]
+
+    tail = ""
+    if data.get("sick"):
+        tail = "* ill — needs healing"
+    elif data.get("sleeping"):
+        tail = "* asleep"
+    lines.append(f"{'':<16} {tail}")
+    return lines[:STATUS_LINES]
 
 # The capsule reports a semantic level; mapping it to a palette is a client
 # concern. tmux interprets #[...] directives inside #(command) output.
@@ -336,6 +379,7 @@ def daemon(interval):
     file every second without paying for a process spawn each time.
     """
     session = None
+    frame = 0
     print(f"pet daemon: refreshing {LINE_CACHE} every {interval}s "
           f"(Ctrl+C to stop)", file=sys.stderr)
     while True:
@@ -349,10 +393,16 @@ def daemon(interval):
             lvl = (data.get("level") if isinstance(data, dict) else None) or "ok"
             style = TMUX_STYLE.get(lvl, "")
             line = f"{style}{body}#[default]" if style else body
+            # Alternating the frame each poll is what makes the face blink in
+            # the status bar without any animation support from tmux.
+            tall = [f"{style}{t}#[default]" if style else t
+                    for t in build_lines(data, frame)]
+            frame += 1
         except KeyboardInterrupt:
             raise
         except Exception as exc:
             line = "pet: offline"
+            tall = ["pet: offline"] + [""] * (STATUS_LINES - 1)
             print(f"pet daemon: {exc}", file=sys.stderr)
             if session:
                 session.close()
@@ -360,6 +410,8 @@ def daemon(interval):
         try:
             with open(LINE_CACHE, "w") as fh:
                 fh.write(line + "\n")
+            with open(LINES_CACHE, "w") as fh:
+                fh.write("\n".join(tall) + "\n")
         except OSError:
             pass
         time.sleep(interval)
@@ -397,6 +449,19 @@ a full-screen TUI like `aos chat` owns the terminal.
      set -g status-interval 5
      set -g status-right "#(cat ~/.pet-line) | %H:%M"
      set -g status-right-length 80
+
+2b) OR, for the tall animated pet in the corner (4 extra rows in every
+    window, so it costs screen space):
+
+     set -g status 5
+     set -g status-interval 2
+     set -g status-format[1] "#(sed -n 1p ~/.pet-lines)"
+     set -g status-format[2] "#(sed -n 2p ~/.pet-lines)"
+     set -g status-format[3] "#(sed -n 3p ~/.pet-lines)"
+     set -g status-format[4] "#(sed -n 4p ~/.pet-lines)"
+
+    status-format[0] is left alone, so the window list stays where it is.
+    The face alternates every poll, so it blinks. Requires tmux >= 3.0.
 
 3) RUN YOUR AGENT INSIDE TMUX -- this is the step people miss:
 

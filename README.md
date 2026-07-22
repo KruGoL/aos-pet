@@ -210,6 +210,31 @@ for it to live in. The pet then sits in the bottom-right corner of every tmux wi
 
 `python3 tools/pet.py tmux` prints this setup at any time.
 
+**Want the whole pet in the corner instead of one line?** tmux 3.0+ supports a
+multi-row status bar, so the poller also keeps a four-line layout in
+`~/.pet-lines`:
+
+```
+[0] 0:astrid*
+    /\_/\        Мурзик · content · 2d
+   ( o.o )       f [##########] 100   h [########--]  80
+    > _ <        e [######----]  60   c [##########] 100
+                 * ill — needs healing
+```
+
+```tmux
+set -g status 5
+set -g status-interval 2
+set -g status-format[1] "#(sed -n 1p ~/.pet-lines)"
+set -g status-format[2] "#(sed -n 2p ~/.pet-lines)"
+set -g status-format[3] "#(sed -n 3p ~/.pet-lines)"
+set -g status-format[4] "#(sed -n 4p ~/.pet-lines)"
+```
+
+`status-format[0]` is left alone so the window list stays put, and the face
+alternates on every poll — it blinks at you from the corner. It costs four rows
+in every window, which is the honest trade.
+
 Prefer a full animated pet to a one-liner? Split the window instead:
 
 ```sh
