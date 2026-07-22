@@ -16,6 +16,7 @@ Usage:
   pet.py demo
   pet.py watch [seconds]     # animated full-screen view
   pet.py daemon [seconds]    # background poller -> ~/.pet-line (for status bars)
+  pet.py serve [port]        # HTTP bridge on 127.0.0.1 (for the desktop overlay)
   pet.py line                # print the cached one-liner (instant, no MCP)
   pet.py tmux                # print tmux setup for an always-visible pet
 
@@ -28,6 +29,7 @@ import subprocess
 import sys
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 AOS = os.path.expanduser("~/.aos/bin/aos")
 HOME = os.path.expanduser("~")
@@ -330,6 +332,123 @@ def unpack(response):
         return body, None
 
 
+# ---------------------------------------------------------------------------
+# HTTP bridge: lets a desktop overlay (or anything local) talk to the capsule
+# without speaking MCP. Bound to 127.0.0.1 only.
+
+ACTION_TOOLS = {
+    "feed": "pet_feed", "play": "pet_play", "clean": "pet_clean",
+    "heal": "pet_heal", "sleep": "pet_sleep", "adopt": "pet_adopt",
+    "rename": "pet_rename", "status": "pet_status", "alerts": "pet_alerts",
+}
+
+BRIDGE_PORT = int(os.environ.get("PET_BRIDGE_PORT", "8737"))
+
+
+class BridgeCore:
+    """Routing + MCP session lifecycle, free of HTTP plumbing so tests can
+    drive it directly. One session, one lock: the stdio pipe is serial."""
+
+    def __init__(self, session_factory):
+        self._factory = session_factory
+        self._session = None
+        self._lock = threading.Lock()
+
+    def handle(self, method, path, body):
+        if method == "OPTIONS":
+            return 204, None
+        if method == "GET" and path == "/health":
+            return 200, {"ok": True}
+        if method == "GET" and path == "/status":
+            return self._tool_result("pet_status", {})
+        if method == "GET" and path == "/alerts":
+            return self._tool_result("pet_alerts", {})
+        if method == "POST" and path == "/action":
+            key = (body or {}).get("tool")
+            if key not in ACTION_TOOLS:
+                return 400, {"error": f"unknown tool: {key!r}"}
+            return self._tool_result(ACTION_TOOLS[key], (body or {}).get("args") or {})
+        return 404, {"error": "not found"}
+
+    def _tool_result(self, tool, args):
+        data, err, alive = self._call(tool, args)
+        if not alive:
+            return 503, {"error": "MCP session lost (is the AOS daemon up?)"}
+        if err:
+            # The capsule answered "no" — that is an answer, not an outage.
+            return 200, {"error": err}
+        return 200, data if isinstance(data, dict) else {"result": data}
+
+    def _call(self, tool, args):
+        with self._lock:
+            for _attempt in (1, 2):
+                if self._session is None:
+                    try:
+                        self._session = self._factory()
+                    except Exception:
+                        continue
+                try:
+                    response = self._session.call(tool, args)
+                except Exception:
+                    response = None
+                if response is not None:
+                    data, err = unpack(response)
+                    return data, err, True
+                try:
+                    self._session.close()
+                except Exception:
+                    pass
+                self._session = None
+            return None, None, False
+
+
+class BridgeHandler(BaseHTTPRequestHandler):
+    core = None  # injected by serve()
+
+    def _respond(self, status, payload):
+        body = b"" if payload is None else json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        if payload is not None:
+            self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        self._respond(*self.core.handle("OPTIONS", self.path, None))
+
+    def do_GET(self):
+        self._respond(*self.core.handle("GET", self.path, None))
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b""
+        try:
+            body = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            self._respond(400, {"error": "invalid JSON body"})
+            return
+        self._respond(*self.core.handle("POST", self.path, body))
+
+    def log_message(self, *_args):
+        pass  # keep the console quiet; errors surface as HTTP statuses
+
+
+def serve(port):
+    core = BridgeCore(lambda: Session(timeout=None))
+    BridgeHandler.core = core
+    server = ThreadingHTTPServer(("127.0.0.1", port), BridgeHandler)
+    print(f"pet bridge: http://127.0.0.1:{port}  (Ctrl+C to stop)", file=sys.stderr)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
 def show(tool, response):
     data, err = unpack(response)
     if err:
@@ -599,6 +718,9 @@ def _dispatch(argv):
         return
     if cmd == "daemon":
         daemon(int(argv[1]) if len(argv) > 1 else 10)
+        return
+    if cmd == "serve":
+        serve(int(argv[1]) if len(argv) > 1 else BRIDGE_PORT)
         return
 
     session = Session()

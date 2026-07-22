@@ -3,3 +3,6 @@
 *.capsule
 *.wasm
 __pycache__/
+docs/superpowers/
+overlay/node_modules/
+overlay/dist/
