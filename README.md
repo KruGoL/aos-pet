@@ -102,14 +102,47 @@ granted — the CE distribution does not ship it.
 
 ### Always-visible pet in your terminal
 
+The pet lives in the **tmux status bar**, which tmux draws *outside* the pane — so it
+stays visible even while a full-screen TUI like `aos chat` owns the terminal.
+
+**1.** Start the poller. It holds one MCP session open and refreshes `~/.pet-line`, so the
+status bar reads a plain file in ~0.1 s instead of spawning `aos mcp serve` every tick:
+
 ```sh
-python3 tools/pet.py tmux     # prints the setup
 python3 tools/pet.py daemon 10 &
 ```
 
-The poller keeps `~/.pet-line` fresh with a compact one-liner
-(`Rex (^.^) f80 h80 e80 c80`) that a tmux status bar or shell prompt can read instantly.
-The line is rendered by the capsule, so every client shows the pet identically.
+**2.** Add to `~/.tmux.conf`:
+
+```tmux
+set -g status-interval 5
+set -g status-right "#(cat ~/.pet-line) | %H:%M"
+set -g status-right-length 80
+```
+
+**3. Run your agent *inside* tmux — this is the step people miss:**
+
+```sh
+tmux new-session 'aos chat'
+```
+
+Launching `aos chat` in a plain terminal shows no pet, because there is no tmux status bar
+for it to live in. The pet then sits in the bottom-right corner of every tmux window:
+
+```
+[0] 0:astrid*                            Rex (-.-) f49 h24 e0 c0 | 16:37
+```
+
+`python3 tools/pet.py tmux` prints this setup at any time.
+
+Prefer a full animated pet to a one-liner? Split the window instead:
+
+```sh
+tmux split-window -h "python3 tools/pet.py watch 99999"
+```
+
+The compact line is rendered by the capsule itself, so every client shows the pet
+identically.
 
 ## Development
 

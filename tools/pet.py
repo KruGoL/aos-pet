@@ -298,10 +298,13 @@ TMUX_HELP = f"""\
 Always-visible pet in the tmux status bar
 =========================================
 
+tmux draws its status bar OUTSIDE the pane, so the pet stays visible even while
+a full-screen TUI like `aos chat` owns the terminal.
+
 1) Start the background poller (keeps ~/.pet-line fresh, and keeps WSL awake
    so the capsule's watchdog ticks keep running):
 
-     pet daemon 10 &
+     python3 {_SELF} daemon 10 &
 
 2) Add to ~/.tmux.conf:
 
@@ -309,13 +312,19 @@ Always-visible pet in the tmux status bar
      set -g status-right "#(cat ~/.pet-line) | %H:%M"
      set -g status-right-length 80
 
-3) Reload tmux config (inside tmux):
+3) RUN YOUR AGENT INSIDE TMUX -- this is the step people miss:
 
-     tmux source-file ~/.tmux.conf
+     tmux new-session 'aos chat'
 
-The pet now sits in the corner of every tmux window, refreshing every 5s.
+   Starting `aos chat` in a plain terminal shows no pet: there is no tmux
+   status bar for it to live in. Already inside tmux? Reload the config with
+   `tmux source-file ~/.tmux.conf`.
 
-Prefer a dedicated animated pane instead? Split and run the viewer:
+The pet then sits in the bottom-right of every tmux window:
+
+     [0] 0:astrid*                  Rex (-.-) f49 h24 e0 c0 | 16:37
+
+Prefer a full animated pet to a one-liner? Split the window instead:
 
      tmux split-window -h "python3 {_SELF} watch 99999"
 """
