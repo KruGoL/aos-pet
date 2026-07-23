@@ -45,12 +45,33 @@ async function boot() {
   let resultBubbleText = ''
   let overPet = false
   let overMenu = false
+  let dragging = false
+  let dragMoved = false
+  let suppressTap = false
 
-  const interactive = () => window.petShell.setInteractive(overPet || overMenu || ui.menuOpen())
+  const interactive = () => window.petShell.setInteractive(
+    dragging || overPet || overMenu || ui.menuOpen() || ui.panelOpen())
   pet.on('pointerover', () => { overPet = true; interactive() })
   pet.on('pointerout', () => { overPet = false; setTimeout(interactive, 50) })
   const menuEnter = () => { overMenu = true; interactive() }
   const menuLeave = () => { overMenu = false; setTimeout(interactive, 50) }
+
+  // Drag: grab the pet and carry it along the strip. A real drag suppresses
+  // the tap that fires on release, so the menu does not pop open afterwards.
+  pet.on('pointerdown', () => { dragging = true; dragMoved = false; interactive() })
+  window.addEventListener('pointermove', ev => {
+    if (!dragging) return
+    dragMoved = true
+    ui.hideMenu()
+    const nx = Math.min(Math.max(ev.clientX - pet.width / 2, 8), innerWidth - 160)
+    walker = { ...walker, x: nx, mode: 'pause', remainingMs: 1500 }
+  })
+  window.addEventListener('pointerup', () => {
+    if (!dragging) return
+    dragging = false
+    if (dragMoved) suppressTap = true
+    setTimeout(interactive, 50)
+  })
 
   async function refresh() { presence = await fetchStatus() }
   setInterval(refresh, POLL_MS)
@@ -74,13 +95,16 @@ async function boot() {
       `${s.name ?? 'pet'} · ${s.mood ?? ''}\n` +
       `food   [${ui.bar(s.fullness)}] ${s.fullness ?? '?'}   joy   [${ui.bar(s.happiness)}] ${s.happiness ?? '?'}\n` +
       `energy [${ui.bar(s.energy)}] ${s.energy ?? '?'}   clean [${ui.bar(s.cleanliness)}] ${s.cleanliness ?? '?'}\n` +
-      (tail ? `\n${tail}` : ''), pet.x)
+      (tail ? `\n${tail}` : ''), pet.x, menuEnter, menuLeave)
+    setTimeout(() => { if (ui.panelOpen()) { ui.hidePanel(); menuLeave() } }, 12_000)
   }
 
   pet.on('pointertap', () => {
+    if (suppressTap) { suppressTap = false; return }
+    if (ui.panelOpen()) { ui.hidePanel(); interactive(); return }
     if (ui.menuOpen()) { ui.hideMenu(); interactive(); return }
     if (presence.kind === 'no-pet') {
-      ui.showAdopt(pet.x, name => act('adopt', { name }))
+      ui.showAdopt(pet.x, name => act('adopt', { name }), menuEnter, menuLeave)
       return
     }
     ui.showMenu([

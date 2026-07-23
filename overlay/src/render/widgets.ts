@@ -43,24 +43,33 @@ export function showMenu(actions: MenuAction[], x: number, y: number,
 export function hideMenu(): void { document.getElementById('pet-menu')?.remove() }
 export function menuOpen(): boolean { return !!document.getElementById('pet-menu') }
 
-export function showPanel(text: string, x: number): void {
+export function showPanel(text: string, x: number,
+                          onEnter: () => void, onLeave: () => void): void {
   hidePanel()
   const el = document.createElement('div')
   el.id = 'pet-panel'
   el.className = 'panel'
   el.textContent = text
-  el.onclick = hidePanel
+  // Without enter/leave the window drops back to click-through and the panel
+  // becomes a ghost you cannot even close.
+  el.onmouseenter = onEnter
+  el.onmouseleave = onLeave
+  el.onclick = () => { hidePanel(); onLeave() }
   widgets().appendChild(el)
   el.style.left = `${Math.max(4, Math.min(x, innerWidth - el.offsetWidth - 4))}px`
   el.style.top = '4px'
 }
 export function hidePanel(): void { document.getElementById('pet-panel')?.remove() }
+export function panelOpen(): boolean { return !!document.getElementById('pet-panel') }
 
-export function showAdopt(x: number, onAdopt: (name: string) => void): void {
+export function showAdopt(x: number, onAdopt: (name: string) => void,
+                          onEnter: () => void, onLeave: () => void): void {
   hideMenu()
   const el = document.createElement('div')
   el.id = 'pet-menu'
   el.className = 'menu adopt'
+  el.onmouseenter = onEnter
+  el.onmouseleave = onLeave
   const input = document.createElement('input')
   input.placeholder = 'pet name'
   const b = document.createElement('button')
