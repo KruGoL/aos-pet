@@ -58,8 +58,8 @@ async function boot() {
 
   async function act(tool: string, args?: object) {
     ui.hideMenu()
-    const res = await postAction(tool, args).catch(() => ({ error: 'мост молчит' }))
-    resultBubbleText = (res as any).message ?? (res as any).error ?? 'готово'
+    const res = await postAction(tool, args).catch(() => ({ error: 'bridge offline' }))
+    resultBubbleText = (res as any).message ?? (res as any).error ?? 'done'
     resultBubbleUntil = performance.now() + 4000
     await refresh()
   }
@@ -72,8 +72,8 @@ async function boot() {
     const tail = (alerts.alerts ?? []).slice(-3).map(a => `- ${a.message}`).join('\n')
     ui.showPanel(
       `${s.name ?? 'pet'} · ${s.mood ?? ''}\n` +
-      `еда  [${ui.bar(s.fullness)}] ${s.fullness ?? '?'}   счастье [${ui.bar(s.happiness)}] ${s.happiness ?? '?'}\n` +
-      `сон  [${ui.bar(s.energy)}] ${s.energy ?? '?'}   чистота [${ui.bar(s.cleanliness)}] ${s.cleanliness ?? '?'}\n` +
+      `food   [${ui.bar(s.fullness)}] ${s.fullness ?? '?'}   joy   [${ui.bar(s.happiness)}] ${s.happiness ?? '?'}\n` +
+      `energy [${ui.bar(s.energy)}] ${s.energy ?? '?'}   clean [${ui.bar(s.cleanliness)}] ${s.cleanliness ?? '?'}\n` +
       (tail ? `\n${tail}` : ''), pet.x)
   }
 
@@ -84,14 +84,14 @@ async function boot() {
       return
     }
     ui.showMenu([
-      { icon: '🍖', title: 'покормить', run: () => act('feed') },
-      { icon: '⚽', title: 'поиграть', run: () => act('play') },
-      { icon: '🧼', title: 'помыть', run: () => act('clean') },
-      { icon: '💊', title: 'полечить', run: () => act('heal') },
-      { icon: '😴', title: 'сон', run: () => act('sleep') },
-      { icon: '📊', title: 'статус', run: openPanel },
+      { icon: '🍖', title: 'feed', run: () => act('feed') },
+      { icon: '⚽', title: 'play', run: () => act('play') },
+      { icon: '🧼', title: 'wash', run: () => act('clean') },
+      { icon: '💊', title: 'heal', run: () => act('heal') },
+      { icon: '😴', title: 'sleep', run: () => act('sleep') },
+      { icon: '📊', title: 'stats', run: openPanel },
       { icon: '💬', title: 'aos chat', run: () => { ui.hideMenu(); window.petShell.openChat() } },
-      { icon: '✖', title: 'выход', run: () => window.petShell.quit() },
+      { icon: '✖', title: 'quit', run: () => window.petShell.quit() },
     ], pet.x + pet.width / 2, GROUND_Y - 40, menuEnter, menuLeave)
   })
 

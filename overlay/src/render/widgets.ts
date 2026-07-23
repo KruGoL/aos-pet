@@ -62,10 +62,10 @@ export function showAdopt(x: number, onAdopt: (name: string) => void): void {
   el.id = 'pet-menu'
   el.className = 'menu adopt'
   const input = document.createElement('input')
-  input.placeholder = 'имя питомца'
+  input.placeholder = 'pet name'
   const b = document.createElement('button')
   b.textContent = '🐣'
-  b.title = 'завести'
+  b.title = 'adopt'
   b.onclick = () => onAdopt(input.value.trim() || 'Blob')
   el.append(input, b)
   widgets().appendChild(el)

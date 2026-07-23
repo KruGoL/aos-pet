@@ -40,15 +40,20 @@ function spawnBridge() {
   }
 }
 
+// Chat opens inside tmux on purpose: the user's tmux status bar carries the
+// always-visible mini pet (see tools/pet.py tmux), so the pet stays in the
+// corner of the chat too. -A reuses the session instead of stacking new ones.
+const CHAT_CMD = 'cd ~ && exec tmux new-session -A -s pet "~/.aos/bin/aos chat"'
+
 function openChat() {
   if (process.platform === 'win32') {
-    spawn('wt.exe', ['wsl.exe', '-e', 'bash', '-lc', 'cd ~ && exec ~/.aos/bin/aos chat'],
+    spawn('wt.exe', ['wsl.exe', '-e', 'bash', '-lc', CHAT_CMD],
       { detached: true, stdio: 'ignore', shell: false }).unref()
   } else if (process.platform === 'darwin') {
-    spawn('osascript', ['-e', 'tell app "Terminal" to do script "aos chat"'],
+    spawn('osascript', ['-e', `tell app "Terminal" to do script "bash -lc '${CHAT_CMD.replace('~/.aos/bin/aos', 'aos')}'"`],
       { detached: true, stdio: 'ignore' }).unref()
   } else {
-    spawn('x-terminal-emulator', ['-e', 'bash', '-lc', 'cd ~ && exec aos chat'],
+    spawn('x-terminal-emulator', ['-e', 'bash', '-lc', CHAT_CMD.replace('~/.aos/bin/aos', 'aos')],
       { detached: true, stdio: 'ignore' }).unref()
   }
 }

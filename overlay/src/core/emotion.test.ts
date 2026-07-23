@@ -28,15 +28,20 @@ describe('emotionFor', () => {
     expect(e.frames).toEqual(base.frames)
     expect(e.tint).toBe('ok')
   })
-  it('hunger under threshold -> еда?', () => {
-    expect(emotionFor(ok({ fullness: 20 })).bubble).toBe('еда?')
+  it('hunger under threshold -> food?', () => {
+    expect(emotionFor(ok({ fullness: 20 })).bubble).toBe('food?')
   })
   it('lowest need wins', () => {
-    expect(emotionFor(ok({ fullness: 25, cleanliness: 10 })).bubble).toBe('мыло?')
+    expect(emotionFor(ok({ fullness: 25, cleanliness: 10 })).bubble).toBe('soap?')
   })
-  it('energy -> сон?, happiness -> мяч?', () => {
-    expect(emotionFor(ok({ energy: 5 })).bubble).toBe('сон?')
-    expect(emotionFor(ok({ happiness: 5 })).bubble).toBe('мяч?')
+  it('energy -> sleep?, happiness -> play?', () => {
+    expect(emotionFor(ok({ energy: 5 })).bubble).toBe('sleep?')
+    expect(emotionFor(ok({ happiness: 5 })).bubble).toBe('play?')
+  })
+  it('frames are trimmed to the art block (capsule sends full cards)', () => {
+    const card = ' /\\_/\\\n( o.o )\n > ^ <\n\nRex — happy\nFullness [####------]  40'
+    const e = emotionFor(ok({ frames: [card, card] }))
+    expect(e.frames[0]).toBe(' /\\_/\\\n( o.o )\n > ^ <')
   })
   it('ailment label beats needs', () => {
     const e = emotionFor(ok({ fullness: 1, ailments: [{ label: 'tummy ache' }] }))
@@ -59,6 +64,6 @@ describe('emotionFor', () => {
     expect(emotionFor({ kind: 'waking' }).bubble).toBe('…')
   })
   it('no-pet: bubble asks to adopt', () => {
-    expect(emotionFor({ kind: 'no-pet', message: 'x' }).bubble).toBe('заведи меня!')
+    expect(emotionFor({ kind: 'no-pet', message: 'x' }).bubble).toBe('adopt me!')
   })
 })
