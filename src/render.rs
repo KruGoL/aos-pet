@@ -189,6 +189,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_prompt_never_claims_an_expired_moment_is_happening_now() {
+        // Mirrors the on_before_prompt_build path, which runs decay::advance
+        // WITHOUT behaviour::update. When only behaviour expired moments, the
+        // agent kept telling the player what the pet is doing "right now"
+        // hours after it stopped.
+        let cfg = crate::config::Config::default();
+        let mut p = Pet::new("Rex".into(), 0);
+        p.moment = Some(crate::moment::Active { idx: 0, ends_at_ms: 60_000 });
+        crate::decay::advance(&mut p, 4 * 3_600_000, &cfg);
+        let s = prompt_section(&p);
+        assert!(!s.contains("Right now"), "got: {s}");
+    }
+
+    #[test]
     fn bar_endpoints_are_exact() {
         assert_eq!(bar(0, 10), "..........");
         assert_eq!(bar(100, 10), "##########");

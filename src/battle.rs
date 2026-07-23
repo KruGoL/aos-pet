@@ -375,17 +375,36 @@ mod tests {
     // must stay a genuine wall even for a cherished pet, and nothing may be
     // perfectly hopeless.
 
+    // The tiers come from the REAL care→stats mapping, not frozen constants:
+    // an audit exercise proved that hand-copied stat lines let stats_for be
+    // gutted (care contribution flattened to nothing) with the whole balance
+    // suite still green. Deriving them binds these bands to the keystone.
+    fn tier(f: f64, h: f64, e: f64, c: f64, sick: bool, age: u64) -> Stats {
+        let mut p = pet();
+        p.fullness = f;
+        p.happiness = h;
+        p.energy = e;
+        p.cleanliness = c;
+        p.sick = sick;
+        stats_for(&p, age)
+    }
     fn peak() -> Stats {
-        // Stage 3, everything at 100, healthy.
-        Stats { hp: 85, attack: 20, defense: 16, speed: 16 }
+        tier(100.0, 100.0, 100.0, 100.0, false, 30 * DAY)
     }
     fn mid() -> Stats {
-        // Stage 1, everything around 60.
-        Stats { hp: 55, attack: 14, defense: 13, speed: 11 }
+        tier(60.0, 60.0, 60.0, 60.0, false, DAY)
     }
     fn neglected() -> Stats {
-        // Stage 0, run down and sick.
-        Stats { hp: 40, attack: 7, defense: 3, speed: 7 }
+        tier(10.0, 10.0, 30.0, 10.0, true, 0)
+    }
+
+    #[test]
+    fn the_tiers_reflect_what_care_actually_buys() {
+        // Sanity anchor: if this fails, stats_for changed — retune the bands
+        // consciously instead of letting them drift.
+        assert_eq!(peak(), Stats { hp: 85, attack: 20, defense: 16, speed: 16 });
+        assert_eq!(mid(), Stats { hp: 55, attack: 14, defense: 13, speed: 11 });
+        assert_eq!(neglected(), Stats { hp: 40, attack: 7, defense: 3, speed: 7 });
     }
 
     fn win_rate(mine: Stats, idx: usize, n: u32) -> f64 {

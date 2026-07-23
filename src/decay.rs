@@ -51,7 +51,10 @@ fn hours_below(before: f64, threshold: f64, rate: f64, span_h: f64) -> f64 {
 }
 
 fn pet_hours_to_ms(h: f64) -> u64 {
-    (h * MS_PER_HOUR) as u64
+    // Round, never truncate: systematic 1 ms undershoot once left an ailment
+    // clock a hair before onset, which burned a billing segment on a
+    // microscopic crossing and silently dropped the rest of the span.
+    (h * MS_PER_HOUR).round() as u64
 }
 
 /// Multiplier from an active moment, weighted by how much of the span the
@@ -72,8 +75,52 @@ fn moment_multiplier(pet: &Pet, now_ms: u64, elapsed_ms: u64) -> f64 {
     def.decay_mult * frac + (1.0 - frac)
 }
 
+/// When the pet, awake or asleep, will next cross its own sleep boundary,
+/// in pet-hours from now. Infinity when it is heading away from it.
+fn sleep_crossing_h(sleeping: bool, energy: f64, cfg: &Config) -> f64 {
+    use crate::behaviour::{SLEEP_AT, WAKE_AT};
+    if sleeping {
+        if cfg.energy_recovery_per_hour <= 0.0 {
+            return f64::INFINITY;
+        }
+        ((f64::from(WAKE_AT) - energy) / cfg.energy_recovery_per_hour).max(0.0)
+    } else {
+        if cfg.energy_per_hour <= 0.0 {
+            return f64::INFINITY;
+        }
+        ((energy - f64::from(SLEEP_AT)) / cfg.energy_per_hour).max(0.0)
+    }
+}
+
+/// When a physical ailment will set in, in pet-hours from now: the bar must
+/// first empty, then sit empty until its clock reaches onset. Closed form.
+fn physical_onset_h(bar: f64, rate: f64, clock_ms: u64) -> f64 {
+    let onset_left_h = (crate::ailment::ONSET_H - clock_ms as f64 / MS_PER_HOUR).max(0.0);
+    let to_empty_h = if bar <= 0.0 {
+        0.0
+    } else if rate > 0.0 && rate.is_finite() {
+        bar / rate
+    } else {
+        return f64::INFINITY;
+    };
+    to_empty_h + onset_left_h
+}
+
 /// Advance the pet to `now_ms`, returning any thresholds newly crossed
 /// (used to raise alerts). Idempotent for a repeated timestamp.
+///
+/// The span is billed in SEGMENTS: the rates in force change when the pet
+/// dozes off or wakes (energy crossing its own thresholds) and when a physical
+/// ailment sets in (famine/grime clock reaching onset). Each boundary is found
+/// in closed form and each segment is billed with constant rates — at most a
+/// handful of segments, never a per-period loop. Without this, whatever state
+/// the pet happened to be in when the span STARTED coloured the entire span:
+/// putting the pet to sleep before a fortnight's absence billed two weeks at
+/// sleep rates, and illness diagnosis depended on how often anything polled.
+///
+/// Only the first sleep transition is modelled; the remainder of the span is
+/// billed in the post-transition state. The doze cycle beyond that would need
+/// per-cycle work, and its error is bounded by a single cycle.
 pub fn advance(pet: &mut Pet, now_ms: u64, cfg: &Config) -> Vec<AlertKind> {
     let elapsed = now_ms.saturating_sub(pet.last_seen_ms);
     if elapsed == 0 {
@@ -82,7 +129,7 @@ pub fn advance(pet: &mut Pet, now_ms: u64, cfg: &Config) -> Vec<AlertKind> {
         return Vec::new();
     }
 
-    let hours = (elapsed as f64 / MS_PER_HOUR) * cfg.scale;
+    let total_h = (elapsed as f64 / MS_PER_HOUR) * cfg.scale;
     let was = (
         pet.fullness,
         pet.happiness,
@@ -91,57 +138,137 @@ pub fn advance(pet: &mut Pet, now_ms: u64, cfg: &Config) -> Vec<AlertKind> {
         pet.sick,
     );
 
-    let slow = if pet.sleeping { cfg.sleep_decay_factor } else { 1.0 };
-    // Physical illness makes a pet miserable faster — but applying the same
-    // multiplier to Gloom would mean sadness accelerates sadness, a spiral that
-    // outruns the very cure it is supposed to motivate. Gloom is excluded so
-    // cheering the pet up can actually gain ground.
-    let physically_ill = crate::ailment::active(pet)
-        .iter()
-        .any(|a| *a != crate::ailment::Ailment::Gloom);
-    let sad_mult = if physically_ill { cfg.sick_decay_factor } else { 1.0 };
     // A moment colours only the part of the span it actually overlaps. Applying
     // it to the whole span let one sunbeam slow an entire fortnight of absence.
-    let slow = slow * moment_multiplier(pet, now_ms, elapsed);
+    // Span-averaged rather than per-segment: a moment window is minutes against
+    // boundaries measured in hours.
+    let m_mult = moment_multiplier(pet, now_ms, elapsed);
+    // Expire a moment that ended inside the span. This must happen HERE, not
+    // only in behaviour::update: the prompt-injection path runs advance alone,
+    // and an expired moment left `Some` had the agent telling the player what
+    // the pet is doing "right now" hours after it stopped.
+    if pet.moment.as_ref().is_some_and(|a| now_ms >= a.ends_at_ms) {
+        pet.moment = None;
+    }
 
-    let full_rate = cfg.fullness_per_hour * slow;
-    let joy_rate = cfg.happiness_per_hour * sad_mult;
-    let clean_rate = cfg.cleanliness_per_hour * slow;
+    let mut crossed = Vec::new();
+    let mut remaining_h = total_h;
+    let mut sleep_done = false;
 
-    // Pre-span values: the closed-form neglect accounting below needs to know
-    // where each bar STARTED to work out when it crossed its threshold.
-    let full_before = pet.fullness;
-    let joy_before = pet.happiness;
-    let clean_before = pet.cleanliness;
+    // Bill a segment of `seg_h` pet-hours in the pet's CURRENT state. The
+    // closure owns all the rate composition so the boundary loop below cannot
+    // drift out of step with the tail billing.
+    let bill = |pet: &mut Pet, seg_h: f64| {
+        if seg_h <= 0.0 {
+            return;
+        }
+        let physically_ill = crate::ailment::active(pet)
+            .iter()
+            .any(|a| *a != crate::ailment::Ailment::Gloom);
+        let slow = if pet.sleeping { cfg.sleep_decay_factor } else { 1.0 } * m_mult;
+        // Physical illness makes a pet miserable faster — but applying the
+        // multiplier to Gloom would mean sadness accelerates sadness, a spiral
+        // outrunning its own cure. Happiness also deliberately ignores `slow`:
+        // if sleep paused everything, a coma would be the dominant strategy.
+        let full_rate = cfg.fullness_per_hour * slow;
+        let clean_rate = cfg.cleanliness_per_hour * slow;
+        let joy_rate =
+            cfg.happiness_per_hour * if physically_ill { cfg.sick_decay_factor } else { 1.0 };
 
-    pet.fullness = drop_stat(pet.fullness, full_rate, hours);
-    // Happiness deliberately ignores `slow`. If sleep paused everything it would
-    // be a strictly dominant move — cheap to enter, cheap to leave, decay almost
-    // halted — and the optimal way to play would be to keep the pet in a coma.
-    // Making it trade mood for energy turns sleep into an actual decision.
-    pet.happiness = drop_stat(pet.happiness, joy_rate, hours);
-    pet.cleanliness = drop_stat(pet.cleanliness, clean_rate, hours);
-    pet.energy = if pet.sleeping {
-        raise_stat(pet.energy, cfg.energy_recovery_per_hour, hours)
-    } else {
-        drop_stat(pet.energy, cfg.energy_per_hour, hours)
+        // Threshold times within the segment, before the bars move.
+        let famine_h = hours_below(pet.fullness, 0.0, full_rate, seg_h);
+        let grime_h = hours_below(pet.cleanliness, 0.0, clean_rate, seg_h);
+        let below_h = hours_below(pet.happiness, f64::from(LOW), joy_rate, seg_h);
+
+        pet.fullness = drop_stat(pet.fullness, full_rate, seg_h);
+        pet.happiness = drop_stat(pet.happiness, joy_rate, seg_h);
+        pet.cleanliness = drop_stat(pet.cleanliness, clean_rate, seg_h);
+        pet.energy = if pet.sleeping {
+            raise_stat(pet.energy, cfg.energy_recovery_per_hour, seg_h)
+        } else {
+            drop_stat(pet.energy, cfg.energy_per_hour, seg_h)
+        };
+
+        crate::ailment::accrue(
+            pet,
+            &crate::ailment::NeglectSpans {
+                famine_ms: pet_hours_to_ms(famine_h),
+                grime_ms: pet_hours_to_ms(grime_h),
+                // Gloom pauses while the pet is physically ill: it is
+                // miserable BECAUSE it is sick, and diagnosing a second
+                // illness on top would cascade famine into gloom. Decided
+                // per segment, so the span before onset still counts.
+                gloom_below_ms: if physically_ill { 0 } else { pet_hours_to_ms(below_h) },
+                gloom_above_ms: pet_hours_to_ms((seg_h - below_h).max(0.0)),
+            },
+        );
     };
 
-    // Each ailment keeps its own clock, so the cure can be specific to the
-    // cause. The clocks are charged only for the time a bar actually spent past
-    // its threshold — computed in closed form from the pre-span value and the
-    // rate, never by iterating. Judging a whole span by its end state fabricated
-    // illness: a pet whose bowl emptied a second before you returned was billed
-    // for the entire fortnight, and whether it fell ill at all depended on how
-    // often anything happened to poll it.
-    let below_low = hours_below(joy_before, f64::from(LOW), joy_rate, hours);
-    let spans = crate::ailment::NeglectSpans {
-        famine_ms: pet_hours_to_ms(hours_below(full_before, 0.0, full_rate, hours)),
-        grime_ms: pet_hours_to_ms(hours_below(clean_before, 0.0, clean_rate, hours)),
-        gloom_below_ms: pet_hours_to_ms(below_low),
-        gloom_above_ms: pet_hours_to_ms((hours - below_low).max(0.0)),
-    };
-    crate::ailment::accrue(pet, &spans);
+    // Up to two modelled boundaries (one sleep transition, one physical
+    // onset), each found in closed form; then the tail is billed
+    // UNCONDITIONALLY. The tail must never depend on the loop exhausting
+    // cleanly: a rounding hair once left an ailment clock 1 ms short of
+    // onset, the "crossing" consumed the last iteration on a microscopic
+    // segment, and the rest of a 10,000-hour span silently vanished while
+    // last_seen still advanced.
+    for _ in 0..2 {
+        if remaining_h <= 0.0 {
+            break;
+        }
+        let physically_ill = crate::ailment::active(pet)
+            .iter()
+            .any(|a| *a != crate::ailment::Ailment::Gloom);
+        let slow = if pet.sleeping { cfg.sleep_decay_factor } else { 1.0 } * m_mult;
+        let full_rate = cfg.fullness_per_hour * slow;
+        let clean_rate = cfg.cleanliness_per_hour * slow;
+
+        let sleep_cross = if sleep_done {
+            f64::INFINITY
+        } else {
+            sleep_crossing_h(pet.sleeping, pet.energy, cfg)
+        };
+        let phys_cross = if physically_ill {
+            f64::INFINITY
+        } else {
+            physical_onset_h(pet.fullness, full_rate, pet.famine_ms)
+                .min(physical_onset_h(pet.cleanliness, clean_rate, pet.grime_ms))
+        };
+
+        let next_cross = sleep_cross.min(phys_cross);
+        if next_cross >= remaining_h {
+            break; // no boundary inside the span — the tail handles the rest
+        }
+
+        bill(pet, next_cross);
+        remaining_h -= next_cross;
+        if sleep_cross <= phys_cross && !sleep_done {
+            // The pet crossed its own sleep boundary mid-span; flip it here so
+            // the rest of the span is billed in the state it was actually in.
+            pet.sleeping = !pet.sleeping;
+            sleep_done = true;
+            crossed.push(if pet.sleeping {
+                AlertKind::DozedOff
+            } else {
+                AlertKind::WokeUp
+            });
+        }
+        // A physical crossing needs no flip, but float dust must not leave a
+        // clock 1 ms shy of the onset it was just billed up to — a degenerate
+        // zero-length crossing here would burn the loop and let the tail be
+        // billed as healthy. Snap the clock that caused the crossing.
+        if phys_cross < sleep_cross {
+            let onset = (crate::ailment::ONSET_H * MS_PER_HOUR) as u64;
+            if pet.fullness <= 0.0 && pet.famine_ms.abs_diff(onset) <= 2 {
+                pet.famine_ms = onset;
+            }
+            if pet.cleanliness <= 0.0 && pet.grime_ms.abs_diff(onset) <= 2 {
+                pet.grime_ms = onset;
+            }
+        }
+    }
+
+    bill(pet, remaining_h);
+
     pet.sick = crate::ailment::is_ill(pet);
     // Kept in step for the legacy field; nothing reads it for diagnosis now.
     pet.neglect_ms = pet.famine_ms.max(pet.grime_ms);
@@ -149,7 +276,6 @@ pub fn advance(pet: &mut Pet, now_ms: u64, cfg: &Config) -> Vec<AlertKind> {
     pet.last_seen_ms = now_ms;
 
     let low = f64::from(LOW);
-    let mut crossed = Vec::new();
     if was.0 >= low && pet.fullness < low {
         crossed.push(AlertKind::Hungry);
     }
@@ -209,11 +335,16 @@ mod tests {
     fn a_very_long_absence_clamps_at_zero_and_never_wraps() {
         let cfg = Config::default();
         let mut p = pet_at(0);
-        advance(&mut p, 10_000 * HOUR, &cfg);
+        let alerts = advance(&mut p, 10_000 * HOUR, &cfg);
         assert_eq!(p.fullness, 0.0);
         assert_eq!(p.happiness, 0.0);
-        assert_eq!(p.energy, 0.0);
         assert_eq!(p.cleanliness, 0.0);
+        // Energy is the exception now: the pet dozed off when it ran out and
+        // slept the absence away (only the first transition is modelled), so
+        // it comes back rested rather than impossibly at zero forever.
+        assert!(p.sleeping, "it put itself to bed at the crossing");
+        assert!(alerts.contains(&AlertKind::DozedOff));
+        assert_eq!(p.energy, 100.0, "and slept its energy back");
     }
 
     #[test]
@@ -407,6 +538,89 @@ mod tests {
     }
 
     #[test]
+    fn gloom_pauses_from_the_instant_physical_illness_sets_in() {
+        // The pause is decided per SEGMENT, at the onset crossing — not by the
+        // end state of the whole span, which made diagnosis depend on how often
+        // the pet was polled. A miserable-but-fed pet accrues gloom right up to
+        // the moment famine sets in, and none after.
+        let cfg = Config::default();
+        let mut quiet = pet_at(0);
+        quiet.happiness = 0.0;
+        // Fullness 80 empties at 10h; famine onsets at 16h. 20h of span.
+        advance(&mut quiet, 20 * HOUR, &cfg);
+
+        let mut watched = pet_at(0);
+        watched.happiness = 0.0;
+        for i in 1..=20u64 {
+            advance(&mut watched, i * HOUR, &cfg);
+        }
+        assert_eq!(
+            quiet.gloom_ms, watched.gloom_ms,
+            "one shot vs hourly must charge identical gloom"
+        );
+        assert_eq!(
+            quiet.gloom_ms,
+            16 * HOUR,
+            "gloom runs until famine onset at t=16h and pauses there"
+        );
+    }
+
+    #[test]
+    fn a_sleeping_pet_does_not_bill_a_whole_absence_at_sleep_rates() {
+        // The sleep discount used to be sampled once at span entry: put the pet
+        // to sleep, leave for a fortnight, and fourteen days were billed at
+        // 0.4x. The segmented form wakes it at the WAKE_AT crossing and bills
+        // the remainder awake.
+        let cfg = Config::default();
+        let mut p = pet_at(0);
+        p.sleeping = true;
+        p.energy = 80.0; // wakes at (85-80)/20 = 0.25h
+        let alerts = advance(&mut p, 40 * HOUR, &cfg);
+
+        assert!(!p.sleeping, "it woke up mid-span");
+        assert!(alerts.contains(&AlertKind::WokeUp), "and said so");
+        // Awake, the bowl empties at ~10.15h and famine hits the 18h ceiling
+        // (40 − 10.15 > 18). Billed asleep for the whole span it would have
+        // emptied at 25h and reached only 15h — below the cap. The cap value
+        // is therefore itself the proof the pet was billed awake.
+        let cap = (crate::ailment::MAX_DEPTH_H * MS_PER_HOUR) as u64;
+        assert_eq!(
+            p.famine_ms, cap,
+            "famine must accrue from the awake empty-time, got {}h",
+            p.famine_ms / HOUR
+        );
+    }
+
+    #[test]
+    fn an_exhausted_pet_dozes_off_mid_span_and_the_bill_says_so() {
+        let cfg = Config::default();
+        let mut p = pet_at(0);
+        p.energy = 8.0; // crosses SLEEP_AT=3 after 1h awake at 5/h
+        let alerts = advance(&mut p, 3 * HOUR, &cfg);
+        assert!(p.sleeping, "it put itself to bed inside the span");
+        assert!(alerts.contains(&AlertKind::DozedOff));
+        // 1h awake (8 -> 3, hitting SLEEP_AT exactly), then 2h asleep at 20/h.
+        let expected = (3.0 + 2.0 * 20.0_f64).min(100.0);
+        assert!(
+            (p.energy - expected).abs() < 1e-6,
+            "energy must be billed piecewise: got {}, want {expected}",
+            p.energy
+        );
+    }
+
+    #[test]
+    fn an_expired_moment_is_cleared_by_advance_itself() {
+        // The prompt-injection path runs advance alone — if only
+        // behaviour::update expired moments, the agent kept announcing what the
+        // pet is doing "right now" hours after it stopped.
+        let cfg = Config::default();
+        let mut p = pet_at(0);
+        p.moment = Some(crate::moment::Active { idx: 0, ends_at_ms: 60_000 });
+        advance(&mut p, 4 * HOUR, &cfg);
+        assert!(p.moment.is_none(), "advance must expire it");
+    }
+
+    #[test]
     fn scale_compresses_time_for_demos() {
         let fast = Config::default().with_scale_str("60");
         let mut p = pet_at(0);
@@ -474,3 +688,4 @@ mod tests {
         );
     }
 }
+

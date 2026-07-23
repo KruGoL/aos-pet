@@ -405,8 +405,18 @@ impl Capsule {
                         "[aos-pet] unreadable record preserved under {KV_CORRUPT}: {why}"
                     ));
                 }
+                Decoded::Newer(v) => {
+                    // A record from a newer build is perfectly good data that
+                    // this build merely cannot read — destroying it on replace
+                    // while corrupt garbage got a backup would be absurd. Same
+                    // parking spot; a later upgrade can recover it from there.
+                    kv::set_bytes(KV_CORRUPT, &bytes)?;
+                    log::info(format!(
+                        "[aos-pet] v{v} record (newer than this build) preserved under {KV_CORRUPT}"
+                    ));
+                }
                 // replace=true over a readable record: plain abandonment.
-                _ => {}
+                Decoded::Pet(_) => {}
             }
         }
         // A new pet must not inherit the previous pet's in-flight guessing
@@ -527,6 +537,11 @@ impl Capsule {
         let msg = if args.wake {
             if pet.sleeping {
                 pet.sleeping = false;
+                // Waking it below the auto-doze threshold used to be futile:
+                // the very next call re-dozed it within the same 5 seconds and
+                // refused whatever the player was trying to do. Getting up
+                // grants the few points that make being awake possible at all.
+                pet.energy = pet.energy.max(f64::from(behaviour::SLEEP_AT) + 7.0);
                 format!("{} stretches and wakes up.", pet.name)
             } else {
                 format!("{} is already awake.", pet.name)
@@ -582,19 +597,23 @@ impl Capsule {
         let now = now_ms()?;
         let mut pet = current(now, &cfg)?;
 
-        // Dosing on any path, including the no-op one, so repeat presses cannot
-        // farm the clock by bouncing off the healthy early return.
-        let ready = economy::readiness(pet.last_healed_ms, now, cfg.heal_ideal_hours, cfg.scale);
-        pet.last_healed_ms = now;
-
         let before = ailment::active(&pet);
         if before.is_empty() {
+            // No dose dispensed, no clock stamped: the healthy path gives
+            // nothing, so stamping here only weakened the NEXT real dose.
             let msg = format!("{} is perfectly healthy.", pet.name);
             return commit(&pet, now, msg);
         }
 
+        let ready = economy::readiness(pet.last_healed_ms, now, cfg.heal_ideal_hours, cfg.scale);
+        pet.last_healed_ms = now;
+
         ailment::apply_medicine(&mut pet, ready);
-        pet.happiness = stat_add(pet.happiness, economy::payoff(HEAL_BOOST / 2, ready));
+        // No min-1 floor here, unlike feed/play: an ill pet has no overserve
+        // refusal to stop the calls, so a floored payoff was an unlimited-rate
+        // +1-per-call happiness pump for as long as the illness lasted.
+        let raw = (f64::from(HEAL_BOOST / 2) * ready.clamp(0.0, 1.0)).round() as u8;
+        pet.happiness = stat_add(pet.happiness, raw);
         pet.sick = ailment::is_ill(&pet);
         note_recovery(&mut pet, true, now);
 
@@ -742,10 +761,15 @@ impl Capsule {
                 // minutes ago.
                 let ready =
                     economy::readiness(pet.last_played_ms, now, cfg.play_ideal_hours, cfg.scale);
-                let gain = economy::payoff(reward, ready).max(reward / 4).max(1);
+                // No extra floors: the audit showed a guaranteed back-to-back
+                // win schedule (autoplay binary search) turned the reward/4 and
+                // 0.25-remedy floors into a cure that outpaced perfectly spaced
+                // care. payoff's own 1-point token is the only floor, matching
+                // pet_play exactly.
+                let gain = economy::payoff(reward, ready);
                 pet.happiness = stat_add(pet.happiness, gain);
                 pet.last_played_ms = now;
-                ailment::apply_remedy(&mut pet, ailment::Ailment::Gloom, ready.max(0.25));
+                ailment::apply_remedy(&mut pet, ailment::Ailment::Gloom, ready);
                 pet.sick = ailment::is_ill(&pet);
                 note_recovery(&mut pet, was_ill, now);
                 kv::delete(game::KV_GAME)?;
@@ -818,7 +842,7 @@ impl Capsule {
             // each alone could not. Energy already paces the fighting itself.
             let ready =
                 economy::readiness(pet.last_played_ms, now, cfg.play_ideal_hours, cfg.scale);
-            pet.happiness = stat_add(pet.happiness, economy::payoff(20, ready).max(5));
+            pet.happiness = stat_add(pet.happiness, economy::payoff(20, ready));
             pet.last_played_ms = now;
             format!(
                 "{} sends {} packing{}!",

@@ -95,7 +95,9 @@ pub struct NeglectSpans {
     pub gloom_above_ms: u64,
 }
 
-/// Accrue neglect for a span. Called once per `advance`, never in a loop.
+/// Accrue neglect for one billed segment. Pure bookkeeping: which portions of
+/// the segment count is decided by `decay::advance` (including the pause of
+/// gloom while physically ill), because only decay knows the crossings.
 pub fn accrue(pet: &mut Pet, spans: &NeglectSpans) {
     // The ceiling is applied on write, so a pet that was already driven past it
     // — by a long absence or a compressed-time demo — is pulled back into
@@ -105,18 +107,12 @@ pub fn accrue(pet: &mut Pet, spans: &NeglectSpans) {
     pet.famine_ms = pet.famine_ms.saturating_add(spans.famine_ms).min(cap);
     pet.grime_ms = pet.grime_ms.saturating_add(spans.grime_ms).min(cap);
 
-    // Gloom is about a sustained low mood rather than an empty bar — you can be
-    // fed and clean and still be miserable. But it pauses while the pet is
-    // physically ill: it is miserable BECAUSE it is sick, treating the sickness
-    // is the remedy, and diagnosing a second illness on top would cascade every
-    // famine into gloom automatically.
-    let onset = hours_to_ms(ONSET_H);
-    let physically_ill = pet.famine_ms >= onset || pet.grime_ms >= onset;
-    if !physically_ill {
-        pet.gloom_ms = pet.gloom_ms.saturating_add(spans.gloom_below_ms).min(cap);
-    }
-    // Time spent cheered up unwinds gloom regardless.
+    // Chronological order: for a falling bar the above-LOW stretch always
+    // precedes the below-LOW stretch, so the credit is applied FIRST. The old
+    // add-then-subtract order let the whole span's credit erase debt that,
+    // in real time, had not been paid off yet.
     pet.gloom_ms = pet.gloom_ms.saturating_sub(spans.gloom_above_ms);
+    pet.gloom_ms = pet.gloom_ms.saturating_add(spans.gloom_below_ms).min(cap);
 
     // Clamp on EVERY pass, not only while accruing. A pet that arrives already
     // past the ceiling — saved before the cap existed, or run through a
@@ -234,37 +230,24 @@ mod tests {
     }
 
     #[test]
-    fn physical_neglect_does_not_stack_gloom_on_top() {
-        // A starving, filthy pet is miserable BECAUSE it is sick. Diagnosing
-        // gloom as well would cascade every famine into a second illness whose
-        // cure (play) the famine itself blocks.
+    fn credit_is_applied_before_debt_within_a_segment() {
+        // Chronology: a falling bar is above LOW first, below it second. The
+        // old add-then-subtract order let future credit cancel past debt.
         let mut p = pet();
-        let all = NeglectSpans {
-            famine_ms: 7 * HOUR,
-            grime_ms: 7 * HOUR,
-            gloom_below_ms: 7 * HOUR,
-            gloom_above_ms: 0,
-        };
-        accrue(&mut p, &all);
-        assert_eq!(
-            active(&p),
-            vec![Ailment::Famine, Ailment::Grime],
-            "gloom pauses while the pet is physically ill"
+        p.gloom_ms = 2 * HOUR;
+        // 5 cheerful hours first: they clear the old 2h and the surplus 3h is
+        // simply gone — cheerfulness cannot be banked against future gloom.
+        // Then 6 gloomy hours land whole: exactly onset. The old add-then-
+        // subtract order banked the surplus and read 3h instead of 6.
+        accrue(
+            &mut p,
+            &NeglectSpans {
+                gloom_above_ms: 5 * HOUR,
+                gloom_below_ms: 6 * HOUR,
+                ..Default::default()
+            },
         );
-    }
-
-    #[test]
-    fn gloom_resumes_once_the_body_is_mended() {
-        let mut p = pet();
-        accrue(&mut p, &famine(7));
-        accrue(&mut p, &gloomy(7));
-        assert!(!active(&p).contains(&Ailment::Gloom), "paused while famished");
-
-        // Cure the famine; the same lonely stretch now counts.
-        while active(&p).contains(&Ailment::Famine) {
-            apply_remedy(&mut p, Ailment::Famine, 1.0);
-        }
-        accrue(&mut p, &gloomy(7));
+        assert_eq!(p.gloom_ms, 6 * HOUR);
         assert!(active(&p).contains(&Ailment::Gloom));
     }
 

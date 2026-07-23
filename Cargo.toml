@@ -1,9 +1,11 @@
 [package]
 name = "aos-pet"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 publish = false
-description = "An Astrid tool capsule."
+description = "A virtual pet that lives inside a Unicity AOS capsule — the capsule is the referee, the LLM is just another visitor."
+repository = "https://github.com/KruGoL/aos-pet"
+license = "MIT"
 
 [lib]
 crate-type = ["cdylib"]

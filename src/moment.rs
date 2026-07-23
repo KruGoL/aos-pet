@@ -124,10 +124,18 @@ impl Active {
 
 /// Which moments a pet's condition currently allows.
 #[must_use]
-pub fn eligible(fullness: f64, happiness: f64, energy: f64, cleanliness: f64) -> Vec<u16> {
+pub fn eligible(
+    fullness: f64,
+    happiness: f64,
+    energy: f64,
+    cleanliness: f64,
+    sleeping: bool,
+) -> Vec<u16> {
     let thriving = fullness >= 70.0 && happiness >= 70.0 && energy >= 70.0 && cleanliness >= 70.0;
     let neglected = happiness < 30.0;
-    let energetic = energy >= 60.0;
+    // A sleeping pet recovering through the energy band must not get the
+    // zoomies in its sleep — energetic moments need it to actually be up.
+    let energetic = energy >= 60.0 && !sleeping;
 
     MOMENTS
         .iter()
@@ -227,7 +235,7 @@ mod tests {
 
     #[test]
     fn gates_keep_sad_moments_away_from_a_thriving_pet() {
-        let happy = eligible(90.0, 90.0, 90.0, 90.0);
+        let happy = eligible(90.0, 90.0, 90.0, 90.0, false);
         let keys: Vec<_> = happy
             .iter()
             .filter_map(|i| MOMENTS.get(*i as usize))
@@ -240,7 +248,7 @@ mod tests {
 
     #[test]
     fn a_neglected_pet_can_have_the_sad_moments() {
-        let sad = eligible(10.0, 10.0, 10.0, 10.0);
+        let sad = eligible(10.0, 10.0, 10.0, 10.0, false);
         let keys: Vec<_> = sad
             .iter()
             .filter_map(|i| MOMENTS.get(*i as usize))
@@ -260,7 +268,7 @@ mod tests {
             (50.0, 50.0, 20.0, 50.0),
             (50.0, 50.0, 90.0, 50.0),
         ] {
-            for i in eligible(f, h, e, c) {
+            for i in eligible(f, h, e, c, false) {
                 if let Some(m) = MOMENTS.get(i as usize) {
                     seen.push(m.key);
                 }
@@ -273,7 +281,7 @@ mod tests {
 
     #[test]
     fn pick_always_returns_something_eligible() {
-        let set = eligible(50.0, 50.0, 50.0, 50.0);
+        let set = eligible(50.0, 50.0, 50.0, 50.0, false);
         assert!(!set.is_empty());
         for seed in [0u32, 1, 7, 99, 12345, u32::MAX] {
             let got = pick(&set, seed).expect("must pick");
@@ -288,7 +296,7 @@ mod tests {
 
     #[test]
     fn weights_actually_bias_the_outcome() {
-        let set = eligible(50.0, 50.0, 50.0, 50.0);
+        let set = eligible(50.0, 50.0, 50.0, 50.0, false);
         let mut sunbeam = 0;
         let mut philosopher = 0;
         for seed in 0..4000u32 {

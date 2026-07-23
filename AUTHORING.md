@@ -124,10 +124,13 @@ actually use. The capability keys a tool capsule cares about:
 | `net_connect` | Outbound TCP `host:port` allowlist. |
 | `host_process` | Host-process command allowlist. |
 | `identity` | Identity operations (`resolve` / `link` / `admin`). |
+| `kv` | Key–value store access; `kv = []` grants the capsule its own principal-scoped namespace. |
+| `allow_prompt_injection` | Lets the prompt-builder hook actually inject text; without it the response is silently stripped. |
 
-The `hello` example in `src/lib.rs` needs **no** capabilities, so the
-`[capabilities]` table is commented out. Uncomment and fill it the moment a tool
-needs an effect — and expect a hard denial at runtime if you forget.
+This capsule's own `Capsule.toml` is a live example: it declares `kv = []` for
+the pet state and `allow_prompt_injection = true` for the ambient briefing, and
+nothing else. Grant only what a tool actually uses — and expect a hard denial
+at runtime if you forget one.
 
 ### `[publish]` / `[subscribe]` — the IPC ACL
 

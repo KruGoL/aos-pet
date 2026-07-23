@@ -62,7 +62,13 @@ pub fn update(pet: &mut Pet, now: u64, cfg: &Config, fresh_seed: u32) -> Vec<Eve
     //    when the deadline was set, so the choice predates the moment arriving.
     if pet.moment.is_none() && now >= pet.next_moment_ms {
         let seed = pet.next_moment_seed;
-        let set = moment::eligible(pet.fullness, pet.happiness, pet.energy, pet.cleanliness);
+        let set = moment::eligible(
+            pet.fullness,
+            pet.happiness,
+            pet.energy,
+            pet.cleanliness,
+            pet.sleeping,
+        );
         if let Some(idx) = moment::pick(&set, seed) {
             if let Some(def) = moment::MOMENTS.get(idx as usize) {
                 let ends = now.saturating_add(moment::duration_ms(idx, seed, cfg.scale));
