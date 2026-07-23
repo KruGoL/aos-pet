@@ -65,10 +65,12 @@ pub fn display(pet: &Pet, frame: usize, now_ms: u64) -> String {
     out.push_str(&stat_line("Happiness", pt(pet.happiness)));
     out.push_str(&stat_line("Energy", pt(pet.energy)));
     out.push_str(&stat_line("Cleanliness", pt(pet.cleanliness)));
-    // Name the ailment and its remedy: "sick" alone tells the player nothing
-    // about what to actually do.
+    // Name the ailment, its remedy AND the progress: "sick" alone tells the
+    // player nothing, and a static "weak from hunger" next to a full bowl
+    // felt like a bug rather than a convalescence.
     for a in crate::ailment::active(pet) {
-        out.push_str(&format!("  ! {} — {}\n", a.label(), a.remedy()));
+        let (label, advice) = a.describe(pet);
+        out.push_str(&format!("  ! {label} — {advice}\n"));
     }
     out.push_str(&format!("  age {age_hours}h"));
     if pet.sleeping {
@@ -165,7 +167,8 @@ pub fn prompt_section(pet: &Pet) -> String {
         pt(pet.cleanliness)
     );
     for a in crate::ailment::active(pet) {
-        s.push_str(&format!(" It is {} — {}.", a.label(), a.remedy()));
+        let (label, advice) = a.describe(pet);
+        s.push_str(&format!(" It is {label} — {advice}."));
     }
     if pet.sleeping {
         s.push_str(" It is asleep right now.");
@@ -250,7 +253,8 @@ mod tests {
         p.famine_ms = 99 * 3_600_000;
         let out = display(&p, 0, 0);
         assert!(out.contains("weak from hunger"), "got {out}");
-        assert!(out.contains("feed it"), "the remedy must be spelled out");
+        assert!(out.contains("keep feeding it"), "the remedy must be spelled out: {out}");
+        assert!(out.contains("more well-spaced"), "and the progress with it: {out}");
 
         let mut s = Pet::new("Rex".into(), 0);
         s.sleeping = true;
@@ -351,9 +355,10 @@ mod tests {
         // The agent can only give useful advice if the prompt says which
         // ailment it is — "sick" would have it guessing.
         p.gloom_ms = 99 * 3_600_000;
+        p.happiness = 10.0; // genuinely low, so the label is not "recovering"
         let ill = prompt_section(&p);
         assert!(ill.contains("sunk in gloom"), "got {ill}");
-        assert!(ill.contains("play with it"), "got {ill}");
+        assert!(ill.contains("keep playing with it"), "got {ill}");
     }
 
     #[test]

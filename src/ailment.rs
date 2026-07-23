@@ -80,6 +80,73 @@ fn hours_to_ms(h: f64) -> u64 {
     (h * MS_PER_HOUR) as u64
 }
 
+/// How an active ailment is doing, for the player. "I fed it and it still
+/// says weak from hunger" is indistinguishable from a bug unless the game
+/// says HOW FAR ALONG the cure is and what it still needs.
+pub struct Recovery {
+    /// The matching need is currently well served — the pet is on the mend,
+    /// and the honest word for its state is "recovering", not "weak".
+    pub recovering: bool,
+    /// Roughly how many more well-spaced remedies clear it. Never zero for an
+    /// active ailment; hurried remedies count for less, so this is a floor.
+    pub remedies_left: u32,
+}
+
+/// Progress report for an active ailment. Meaningless (and unused) when the
+/// ailment is not active.
+#[must_use]
+pub fn recovery(pet: &Pet, kind: Ailment) -> Recovery {
+    let clock_ms = match kind {
+        Ailment::Famine => pet.famine_ms,
+        Ailment::Grime => pet.grime_ms,
+        Ailment::Gloom => pet.gloom_ms,
+    };
+    let over_h = ((clock_ms as f64 / MS_PER_HOUR) - ONSET_H).max(0.0);
+    // n full-strength remedies clear it once n * REMEDY_H exceeds the excess;
+    // an ailment right at onset still takes one.
+    let remedies_left = (over_h / REMEDY_H).floor() as u32 + 1;
+
+    let recovering = match kind {
+        Ailment::Famine => pet.fullness >= f64::from(crate::economy::SATED),
+        Ailment::Grime => pet.cleanliness >= f64::from(crate::economy::SATED),
+        // Gloom unwinds on its own whenever the mood is off the floor.
+        Ailment::Gloom => pet.happiness >= f64::from(crate::config::LOW),
+    };
+    Recovery { recovering, remedies_left }
+}
+
+impl Ailment {
+    /// Player-facing description of an ACTIVE ailment: what state the pet is
+    /// in and what to do next, with the progress the static `label`/`remedy`
+    /// pair cannot carry. Every client — status, prompt, overlay bubble —
+    /// speaks through this, so they all agree.
+    #[must_use]
+    pub fn describe(self, pet: &Pet) -> (String, String) {
+        let r = recovery(pet, self);
+        let (thing, action) = match self {
+            Self::Famine => ("hunger", "meals"),
+            Self::Grime => ("the dirt", "washes"),
+            Self::Gloom => ("gloom", "good plays"),
+        };
+        let label = if r.recovering {
+            format!("recovering from {thing}")
+        } else {
+            self.label().to_string()
+        };
+        let count = if r.remedies_left == 1 {
+            "one more well-spaced".to_string()
+        } else {
+            format!("about {} more well-spaced", r.remedies_left)
+        };
+        let advice = match self {
+            Self::Famine => format!("keep feeding it — {count} {action}"),
+            Self::Grime => format!("keep washing it — {count} {action}"),
+            Self::Gloom => format!("keep playing with it — {count} {action}; medicine will not lift this"),
+        };
+        (label, advice)
+    }
+}
+
 /// The portions of an advance span each neglect clock is charged, already in
 /// pet-time ms. `decay::advance` computes them in closed form from the
 /// pre-span stats and rates — this module deliberately no longer samples the
@@ -401,6 +468,38 @@ mod tests {
         let mut p = pet();
         accrue(&mut p, &famine(9));
         assert_eq!(blocks_play(&p), Some(Ailment::Famine));
+    }
+
+    #[test]
+    fn a_full_bowl_turns_weak_from_hunger_into_recovering() {
+        // "Weak from hunger" next to a 100% bowl read as a bug. Once the need
+        // is served, the honest word is "recovering" — and the player is told
+        // roughly how many well-spaced remedies are left.
+        let mut p = pet();
+        accrue(&mut p, &famine(18));
+        p.fullness = 30.0;
+        let (label, advice) = Ailment::Famine.describe(&p);
+        assert_eq!(label, "weak from hunger", "not fed yet: still weak");
+        assert!(advice.contains("5 more"), "18h deep = ~5 meals, got: {advice}");
+
+        p.fullness = 100.0;
+        let (label, _) = Ailment::Famine.describe(&p);
+        assert_eq!(label, "recovering from hunger");
+    }
+
+    #[test]
+    fn the_remedies_left_counter_actually_counts_down() {
+        let mut p = pet();
+        accrue(&mut p, &famine(18));
+        let before = recovery(&p, Ailment::Famine).remedies_left;
+        apply_remedy(&mut p, Ailment::Famine, 1.0);
+        let after = recovery(&p, Ailment::Famine).remedies_left;
+        assert!(after < before, "a full-strength meal must move the counter");
+
+        // An ailment right at onset is one good remedy from clear.
+        let mut fresh = pet();
+        accrue(&mut fresh, &famine(6));
+        assert_eq!(recovery(&fresh, Ailment::Famine).remedies_left, 1);
     }
 
     #[test]

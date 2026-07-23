@@ -302,10 +302,12 @@ fn view(pet: &Pet, now: u64, message: impl Into<String>) -> PetView {
         sick: pet.sick,
         ailments: ailment::active(pet)
             .into_iter()
-            .map(|a| AilmentView {
-                kind: a.key().to_string(),
-                label: a.label().to_string(),
-                remedy: a.remedy().to_string(),
+            .map(|a| {
+                // Dynamic, not the static enum strings: "weak from hunger"
+                // next to a full bowl reads as a bug. Clients get "recovering
+                // from hunger" plus how many well-spaced remedies are left.
+                let (label, remedy) = a.describe(pet);
+                AilmentView { kind: a.key().to_string(), label, remedy }
             })
             .collect(),
         age_hours: pet.age_ms(now) / 3_600_000,
@@ -322,6 +324,28 @@ fn view(pet: &Pet, now: u64, message: impl Into<String>) -> PetView {
 fn commit(pet: &Pet, now: u64, message: impl Into<String>) -> Result<PetView, SysError> {
     save(pet)?;
     Ok(view(pet, now, message))
+}
+
+/// One sentence of cure progress to append to a care action's message.
+///
+/// "I fed it and nothing changed" was the single most bug-shaped feeling in
+/// the game: the remedy WAS working, invisibly. Every care action against an
+/// active ailment now answers with either "it has lifted" or how much is left.
+fn cure_note(pet: &Pet, kind: ailment::Ailment, was_active: bool) -> String {
+    if !was_active {
+        return String::new();
+    }
+    if ailment::active(pet).contains(&kind) {
+        let (_, advice) = kind.describe(pet);
+        format!(" It is on the mend — {advice}.")
+    } else {
+        let what = match kind {
+            ailment::Ailment::Famine => "the hunger-weakness has lifted",
+            ailment::Ailment::Grime => "the itch has gone",
+            ailment::Ailment::Gloom => "the gloom has lifted",
+        };
+        format!(" And {what}!")
+    }
 }
 
 /// Raise the recovery alert when a cure has just cleared the last ailment.
@@ -466,6 +490,7 @@ impl Capsule {
         }
 
         let was_ill = pet.sick;
+        let had_famine = ailment::active(&pet).contains(&ailment::Ailment::Famine);
         let ready = economy::readiness(pet.last_fed_ms, now, cfg.feed_ideal_hours, cfg.scale);
         pet.fullness = stat_add(pet.fullness, FEED_GAIN);
         pet.happiness = stat_add(pet.happiness, economy::payoff(FEED_JOY, ready));
@@ -476,10 +501,11 @@ impl Capsule {
         note_recovery(&mut pet, was_ill, now);
 
         let msg = format!(
-            "{} munches happily. Fullness is now {}.{}",
+            "{} munches happily. Fullness is now {}.{}{}",
             pet.name,
             render::pt(pet.fullness),
-            economy::payoff_note(ready)
+            economy::payoff_note(ready),
+            cure_note(&pet, ailment::Ailment::Famine, had_famine)
         );
         commit(&pet, now, msg)
     }
@@ -509,6 +535,7 @@ impl Capsule {
             return commit(&pet, now, msg);
         }
         let was_ill = pet.sick;
+        let had_gloom = ailment::active(&pet).contains(&ailment::Ailment::Gloom);
         let ready = economy::readiness(pet.last_played_ms, now, cfg.play_ideal_hours, cfg.scale);
         pet.happiness = stat_add(pet.happiness, economy::payoff(PLAY_GAIN, ready));
         pet.energy = stat_sub(pet.energy, PLAY_ENERGY_COST);
@@ -519,9 +546,10 @@ impl Capsule {
         note_recovery(&mut pet, was_ill, now);
 
         let msg = format!(
-            "You play together. {} is delighted!{}",
+            "You play together. {} is delighted!{}{}",
             pet.name,
-            economy::payoff_note(ready)
+            economy::payoff_note(ready),
+            cure_note(&pet, ailment::Ailment::Gloom, had_gloom)
         );
         commit(&pet, now, msg)
     }
@@ -573,6 +601,7 @@ impl Capsule {
         }
 
         let was_ill = pet.sick;
+        let had_grime = ailment::active(&pet).contains(&ailment::Ailment::Grime);
         let ready = economy::readiness(pet.last_cleaned_ms, now, cfg.clean_ideal_hours, cfg.scale);
         pet.cleanliness = 100.0;
         pet.happiness = stat_add(pet.happiness, economy::payoff(CLEAN_JOY, ready));
@@ -582,9 +611,10 @@ impl Capsule {
         note_recovery(&mut pet, was_ill, now);
 
         let msg = format!(
-            "{} is scrubbed clean and smells lovely.{}",
+            "{} is scrubbed clean and smells lovely.{}{}",
             pet.name,
-            economy::payoff_note(ready)
+            economy::payoff_note(ready),
+            cure_note(&pet, ailment::Ailment::Grime, had_grime)
         );
         commit(&pet, now, msg)
     }
@@ -622,10 +652,11 @@ impl Capsule {
             log::info(format!("[aos-pet] {} recovered", pet.name));
             format!("{} takes the medicine and perks up — recovered!", pet.name)
         } else {
-            // Medicine is not a master key: say plainly what is wrong and what
-            // would actually fix it, or the tool reads as broken.
-            let what: Vec<&str> = remaining.iter().map(|a| a.label()).collect();
-            let how: Vec<&str> = remaining.iter().map(|a| a.remedy()).collect();
+            // Medicine is not a master key: say plainly what is wrong, what
+            // actually fixes it, and how far along it is — or the tool reads
+            // as broken.
+            let what: Vec<String> = remaining.iter().map(|a| a.describe(&pet).0).collect();
+            let how: Vec<String> = remaining.iter().map(|a| a.describe(&pet).1).collect();
             format!(
                 "{} takes the medicine and settles a little, but it is still {}. \
                  Medicine only buys time — {}.",
@@ -737,6 +768,7 @@ impl Capsule {
         };
 
         let was_ill = pet.sick;
+        let had_gloom = ailment::active(&pet).contains(&ailment::Ailment::Gloom);
         let outcome = game::guess(&mut g, args.value);
         let warmth = game::warmth(g.secret, args.value);
 
@@ -775,10 +807,11 @@ impl Capsule {
                 kv::delete(game::KV_GAME)?;
                 save(&pet)?;
                 let msg = format!(
-                    "{} it is — guessed in {guesses}! {} is delighted (+{gain} happiness).{}",
+                    "{} it is — guessed in {guesses}! {} is delighted (+{gain} happiness).{}{}",
                     args.value,
                     pet.name,
-                    economy::payoff_note(ready)
+                    economy::payoff_note(ready),
+                    cure_note(&pet, ailment::Ailment::Gloom, had_gloom)
                 );
                 return Ok(game_view(&pet, now, msg, false, guesses, 0));
             }
