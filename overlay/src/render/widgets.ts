@@ -13,8 +13,11 @@ export function showBubble(text: string | null, x: number, y: number): void {
     widgets().appendChild(el)
   }
   el.textContent = text
-  el.style.left = `${x}px`
-  el.style.top = `${Math.max(0, y - 34)}px`
+  // Clamp into the screen AFTER the text is set: a long message near the
+  // right edge would otherwise run off-screen. Height matters too — the
+  // wrapped bubble must stay fully above the pet's head.
+  el.style.left = `${Math.max(4, Math.min(x, innerWidth - el.offsetWidth - 8))}px`
+  el.style.top = `${Math.max(0, y - el.offsetHeight - 8)}px`
 }
 
 export interface MenuAction { icon: string; title: string; run: () => void }

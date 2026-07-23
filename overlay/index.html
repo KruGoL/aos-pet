@@ -8,14 +8,16 @@
   #widgets { position: absolute; inset: 0; pointer-events: none; }
   #widgets .bubble, #widgets .menu, #widgets .panel { position: absolute; pointer-events: auto; }
   .bubble { background: rgba(20,20,25,.85); color: #eee; border: 1px solid #555;
-            border-radius: 10px; padding: 4px 10px; font-size: 14px; white-space: pre; }
+            border-radius: 10px; padding: 4px 10px; font-size: 14px;
+            max-width: 340px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .menu { display: flex; gap: 4px; background: rgba(20,20,25,.9); border: 1px solid #555;
           border-radius: 12px; padding: 6px; }
   .menu button { font-size: 20px; background: transparent; color: #eee; border: none;
                  cursor: pointer; padding: 4px 6px; border-radius: 8px; }
   .menu button:hover { background: rgba(255,255,255,.15); }
   .panel { background: rgba(20,20,25,.9); color: #ddd; border: 1px solid #555;
-           border-radius: 10px; padding: 8px 12px; font-size: 13px; white-space: pre; }
+           border-radius: 10px; padding: 8px 12px; font-size: 13px;
+           max-width: 480px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .adopt input { font: inherit; background: #111; color: #eee; border: 1px solid #666;
                  border-radius: 6px; padding: 2px 6px; width: 110px; }
 </style>
