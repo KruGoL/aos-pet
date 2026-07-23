@@ -41,10 +41,11 @@ Three ideas it demonstrates concretely:
 ## Desktop overlay — the pet on your actual screen
 
 The pet can leave the terminal: [`overlay/`](overlay/) is a transparent
-always-on-top strip (Electron + PixiJS) where the same ASCII pet walks along
+always-on-top layer (Electron + PixiJS) where the same ASCII pet walks along
 the bottom edge of your desktop, blinks, and shows a thought bubble when it
-wants something. Clicking it opens an item menu (feed / play / wash / heal /
-sleep / status / `aos chat`). Actions go through a tiny HTTP bridge
+wants something. You can pick it up and drop it anywhere — it falls back to
+the bottom edge and walks on. Clicking it opens an item menu (feed / play /
+wash / heal / sleep / stats / `aos chat`). Actions go through a tiny HTTP bridge
 (`tools/pet.py serve`) straight into the capsule — no LLM in the loop, and the
 agent channel keeps working in parallel against the same state.
 
@@ -90,8 +91,8 @@ particular need long enough and the pet earns the matching ailment:
 | sunk in gloom | never played with it | play with it — **medicine will not lift this** |
 
 `pet_heal` is real medicine, but it is not a master key: it takes the edge off
-hunger and grime, cures neither outright, and does nothing at all for gloom. It
-buys you time to do the actual thing.
+hunger and grime — enough to clear an ailment only in its very first hour — and
+does nothing at all for gloom. It buys you time to do the actual thing.
 
 Recovery obeys the same anti-grind rule as everything else — a remedy is worth
 what it is worth *because you spaced it out*. Three impatient clicks in a row

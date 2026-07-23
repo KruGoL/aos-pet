@@ -6,7 +6,6 @@ const { spawn } = require('child_process')
 const http = require('http')
 const path = require('path')
 
-const STRIP_HEIGHT = 220
 const BRIDGE_PORT = process.env.PET_BRIDGE_PORT || '8737'
 let win = null
 let tray = null
@@ -69,9 +68,12 @@ function trayIcon() {
 }
 
 function createWindow() {
+  // Full work-area window (not a bottom strip): the pet can be dragged
+  // anywhere and falls back to the bottom edge. Clicks pass through
+  // everywhere except the pet itself, so the size costs nothing in UX.
   const wa = screen.getPrimaryDisplay().workArea
   win = new BrowserWindow({
-    x: wa.x, y: wa.y + wa.height - STRIP_HEIGHT, width: wa.width, height: STRIP_HEIGHT,
+    x: wa.x, y: wa.y, width: wa.width, height: wa.height,
     frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true,
     resizable: false, movable: false, hasShadow: false, focusable: true,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true },

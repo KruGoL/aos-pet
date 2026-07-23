@@ -21,7 +21,9 @@ const TINT_COLORS: Record<string, number> = {
 }
 const POLL_MS = 5000
 const FRAME_MS = 800
-const GROUND_Y = 150
+const GROUND_MARGIN = 20      // gap between the pet's feet and the window bottom
+const GRAVITY = 2200          // px/s^2 for the fall after a drag
+const MAX_FALL = 1400         // px/s terminal velocity
 
 async function boot() {
   const app = new Application()
@@ -48,6 +50,10 @@ async function boot() {
   let dragging = false
   let dragMoved = false
   let suppressTap = false
+  let airY: number | null = null   // pet top while airborne; null = standing
+  let fallSpeed = 0
+
+  const groundTop = () => innerHeight - GROUND_MARGIN - pet.height
 
   const interactive = () => window.petShell.setInteractive(
     dragging || overPet || overMenu || ui.menuOpen() || ui.panelOpen())
@@ -64,6 +70,8 @@ async function boot() {
     dragMoved = true
     ui.hideMenu()
     const nx = Math.min(Math.max(ev.clientX - pet.width / 2, 8), innerWidth - 160)
+    airY = Math.min(Math.max(ev.clientY - pet.height / 2, 0), groundTop())
+    fallSpeed = 0
     walker = { ...walker, x: nx, mode: 'pause', remainingMs: 1500 }
   })
   window.addEventListener('pointerup', () => {
@@ -95,7 +103,7 @@ async function boot() {
       `${s.name ?? 'pet'} · ${s.mood ?? ''}\n` +
       `food   [${ui.bar(s.fullness)}] ${s.fullness ?? '?'}   joy   [${ui.bar(s.happiness)}] ${s.happiness ?? '?'}\n` +
       `energy [${ui.bar(s.energy)}] ${s.energy ?? '?'}   clean [${ui.bar(s.cleanliness)}] ${s.cleanliness ?? '?'}\n` +
-      (tail ? `\n${tail}` : ''), pet.x, menuEnter, menuLeave)
+      (tail ? `\n${tail}` : ''), pet.x, pet.y, menuEnter, menuLeave)
     setTimeout(() => { if (ui.panelOpen()) { ui.hidePanel(); menuLeave() } }, 12_000)
   }
 
@@ -104,7 +112,7 @@ async function boot() {
     if (ui.panelOpen()) { ui.hidePanel(); interactive(); return }
     if (ui.menuOpen()) { ui.hideMenu(); interactive(); return }
     if (presence.kind === 'no-pet') {
-      ui.showAdopt(pet.x, name => act('adopt', { name }), menuEnter, menuLeave)
+      ui.showAdopt(pet.x, pet.y, name => act('adopt', { name }), menuEnter, menuLeave)
       return
     }
     ui.showMenu([
@@ -116,7 +124,7 @@ async function boot() {
       { icon: '📊', title: 'stats', run: openPanel },
       { icon: '💬', title: 'aos chat', run: () => { ui.hideMenu(); window.petShell.openChat() } },
       { icon: '✖', title: 'quit', run: () => window.petShell.quit() },
-    ], pet.x + pet.width / 2, GROUND_Y - 40, menuEnter, menuLeave)
+    ], pet.x + pet.width / 2, pet.y, menuEnter, menuLeave)
   })
 
   app.ticker.add(ticker => {
@@ -124,14 +132,22 @@ async function boot() {
     const emotion = emotionFor(presence)
     const energy = presence.kind === 'ok' ? presence.status.energy ?? 50 : 0
 
+    // Gravity: after a drag the pet falls back to the bottom edge.
+    if (airY !== null && !dragging) {
+      fallSpeed = Math.min(MAX_FALL, fallSpeed + GRAVITY * (ticker.deltaMS / 1000))
+      airY += fallSpeed * (ticker.deltaMS / 1000)
+      if (airY >= groundTop()) { airY = null; fallSpeed = 0 }
+    }
+    const airborne = airY !== null
+
     walker = tickWalker(walker, ticker.deltaMS, { min: 8, max: innerWidth - 160 },
-      energy, emotion.asleep, Math.random)
+      energy, emotion.asleep || airborne, Math.random)
 
     if (now - lastFrameSwap > FRAME_MS) { frame++; lastFrameSwap = now }
     pet.text = emotion.frames[frame % emotion.frames.length] ?? '(?)'
     ;(pet.style as TextStyle).fill = TINT_COLORS[emotion.tint] ?? TINT_COLORS.ok
     pet.x = walker.x
-    pet.y = GROUND_Y - pet.height
+    pet.y = airY ?? groundTop()
 
     const bubble = now < resultBubbleUntil ? resultBubbleText : emotion.bubble
     ui.showBubble(bubble, walker.x, pet.y)

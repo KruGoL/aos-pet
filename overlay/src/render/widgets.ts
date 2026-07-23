@@ -43,7 +43,7 @@ export function showMenu(actions: MenuAction[], x: number, y: number,
 export function hideMenu(): void { document.getElementById('pet-menu')?.remove() }
 export function menuOpen(): boolean { return !!document.getElementById('pet-menu') }
 
-export function showPanel(text: string, x: number,
+export function showPanel(text: string, x: number, y: number,
                           onEnter: () => void, onLeave: () => void): void {
   hidePanel()
   const el = document.createElement('div')
@@ -57,12 +57,12 @@ export function showPanel(text: string, x: number,
   el.onclick = () => { hidePanel(); onLeave() }
   widgets().appendChild(el)
   el.style.left = `${Math.max(4, Math.min(x, innerWidth - el.offsetWidth - 4))}px`
-  el.style.top = '4px'
+  el.style.top = `${Math.max(4, y - el.offsetHeight - 12)}px`
 }
 export function hidePanel(): void { document.getElementById('pet-panel')?.remove() }
 export function panelOpen(): boolean { return !!document.getElementById('pet-panel') }
 
-export function showAdopt(x: number, onAdopt: (name: string) => void,
+export function showAdopt(x: number, y: number, onAdopt: (name: string) => void,
                           onEnter: () => void, onLeave: () => void): void {
   hideMenu()
   const el = document.createElement('div')
@@ -79,7 +79,7 @@ export function showAdopt(x: number, onAdopt: (name: string) => void,
   el.append(input, b)
   widgets().appendChild(el)
   el.style.left = `${Math.max(4, x - 60)}px`
-  el.style.top = '120px'
+  el.style.top = `${Math.max(4, y - 56)}px`
   input.focus()
 }
 
